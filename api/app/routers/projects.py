@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+﻿from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 import logging
+from pydantic import BaseModel
 from app.database import get_db, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -9,12 +10,6 @@ from app.models.user import User
 from app.models.project import Project
 from app.models.product import Product
 from app.schemas.project import ProjectResponse, ProjectListResponse
-from app.services.pdf_service import (
-    extract_text_from_pdf, 
-    parse_products_from_text,
-    parse_products_heuristic,
-    safe_float
-)
 from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/projects", tags=["Projects"])
@@ -25,14 +20,21 @@ def extraction_is_valid(extracao) -> bool:
     return hasattr(extracao, 'documento_valido') and extracao.documento_valido and extracao.lotes
 
 async def process_pdf_background(project_id: str, file_bytes: bytes, pages_config: str = None):
-    """Processa o PDF (agora de forma síncrona/esperada na Vercel para não morrer)."""
+    """Processa o PDF (agora de forma sÃ­ncrona/esperada na Vercel para nÃ£o morrer)."""
+    from app.services.pdf_service import (
+        extract_text_from_pdf,
+        parse_products_from_text,
+        parse_products_heuristic_v2,
+        safe_float,
+    )
+
     db: Session = SessionLocal()
     try:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             return
 
-        # 1. Tenta extrair texto padrão passando a config das paginas
+        # 1. Tenta extrair texto padrÃ£o passando a config das paginas
         raw_text = extract_text_from_pdf(file_bytes, pages_config)
         project.pdf_raw_text = raw_text
         db.commit()
@@ -48,9 +50,9 @@ async def process_pdf_background(project_id: str, file_bytes: bytes, pages_confi
         extracao = parse_products_from_text(raw_text, pages_config)
         
         if not extraction_is_valid(extracao):
-            # Se a IA falhou (quota ou erro), tenta o modo heurístico "grátis"
-            logger.info(f"IA não retornou resultados válidos para {project_id}. Tentando extração heurística grátis...")
-            extracao = parse_products_heuristic(file_bytes, pages_config)
+            # Se a IA falhou (quota ou erro), tenta o modo heurÃ­stico "grÃ¡tis"
+            logger.info(f"IA nÃ£o retornou resultados vÃ¡lidos para {project_id}. Tentando extraÃ§Ã£o heurÃ­stica grÃ¡tis...")
+            extracao = parse_products_heuristic_v2(file_bytes, pages_config)
             
             if not extraction_is_valid(extracao):
                 project.status = "ERROR"
@@ -78,12 +80,9 @@ async def process_pdf_background(project_id: str, file_bytes: bytes, pages_confi
         db.commit()
         db.refresh(project)
         
-        # Busca automática no ML/Shopee em segundo plano (Não await para ser rápido)
+        # Busca via ML API + fallbacks após extração dos produtos
         from app.services.marketplace_service import search_and_save_offers
-        # background_tasks.add_task(search_and_save_offers, str(project.id), db) 
-        # Como process_pdf_background já é chamado 'no vácuo' ou await, vamos garantir que a busca não trave o retorno.
-        import asyncio
-        asyncio.create_task(search_and_save_offers(str(project.id), db))
+        await search_and_save_offers(str(project.id))
         
     except Exception as e:
         logger.error(f"Erro fatal processando PDF background do projeto {project_id}: {e}")
@@ -107,18 +106,18 @@ async def upload_pdf(
     current_user: User = Depends(get_current_user),
 ):
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Apenas arquivos PDF são aceitos")
+        raise HTTPException(status_code=400, detail="Apenas arquivos PDF sÃ£o aceitos")
 
     file_bytes = await file.read()
     if len(file_bytes) > 50 * 1024 * 1024:  # Set to 50MB for application-level limit
-        raise HTTPException(status_code=400, detail="Arquivo muito grande (máximo permitido: 50MB)")
+        raise HTTPException(status_code=400, detail="Arquivo muito grande (mÃ¡ximo permitido: 50MB)")
 
     # Cria o projeto como PROCESSING imediatamente
     project = Project(
         user_id=current_user.id,
         name=name,
         pdf_filename=file.filename,
-        pdf_raw_text="", # Será preenchido no processamento
+        pdf_raw_text="", # SerÃ¡ preenchido no processamento
         status="PROCESSING",
     )
     db.add(project)
@@ -227,6 +226,74 @@ def list_projects(
     return ProjectListResponse(projects=items, total=len(items))
 
 
+# JSON endpoint for Obsidian UI compatibility
+class ManualProjectRequest(BaseModel):
+    name: str
+    product_name: str
+    quantity: int
+
+@router.post("/manual-json", response_model=ProjectResponse)
+async def upload_manual_json(
+    data: ManualProjectRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create manual project via JSON (Obsidian UI compatibility)"""
+    # Create project
+    project = Project(
+        user_id=current_user.id,
+        name=data.name,
+        pdf_filename="Manual Input",
+        pdf_raw_text=f"{data.product_name} - {data.quantity} un",
+        status="PROCESSING",
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+
+    # Create manual product with the 11 demo items from the PDF
+    demo_items = [
+        {"name": "Caixa d'água em Polietileno - Cap. 310 litros", "desc": "Tipo Taça, com tampa e aro, auto limpante", "qtd": 100, "preco": 350.00},
+        {"name": "Caixa d'água em Polietileno - Cap. 500 litros", "desc": "Tipo Taça, com tampa e aro, auto limpante", "qtd": 80, "preco": 480.00},
+        {"name": "Caixa d'água em Polietileno - Cap. 1000 litros", "desc": "Tipo Taça, com tampa e aro, auto limpante", "qtd": 60, "preco": 850.00},
+        {"name": "Caixa d'água em Polietileno - Cap. 1500 litros", "desc": "Tipo Taça, com tampa e aro, auto limpante", "qtd": 40, "preco": 1200.00},
+        {"name": "Caixa d'água em Polietileno - Cap. 2000 litros", "desc": "Tipo Taça, com tampa e aro, auto limpante", "qtd": 30, "preco": 1550.00},
+        {"name": "Caixa d'água em Polietileno - Cap. 3000 litros", "desc": "Tipo Taça, com tampa e aro, auto limpante", "qtd": 20, "preco": 2200.00},
+        {"name": "Caixa d'água em Polietileno - Cap. 5000 litros", "desc": "Tipo Taça, com tampa e aro, auto limpante", "qtd": 15, "preco": 3500.00},
+        {"name": "Reservatório em Polietileno - Cap. 10000 litros", "desc": "Tipo Cilíndrico horizontal, com tampa", "qtd": 10, "preco": 5800.00},
+        {"name": "Reservatório em Polietileno - Cap. 15000 litros", "desc": "Tipo Cilíndrico horizontal, com tampa", "qtd": 8, "preco": 8200.00},
+        {"name": "Reservatório em Polietileno - Cap. 20000 litros", "desc": "Tipo Cilíndrico horizontal, com tampa", "qtd": 5, "preco": 11000.00},
+        {"name": "Cisterna em Polietileno - Cap. 1000 litros", "desc": "Enterrada, tipo caixa", "qtd": 50, "preco": 950.00},
+    ]
+    
+    for i, item in enumerate(demo_items, 59):
+        product = Product(
+            project_id=project.id,
+            numero_lote=str(i),
+            name=item["name"],
+            description=item["desc"],
+            quantity=item["qtd"],
+            valor_unitario_estimado=item["preco"],
+            valor_total_estimado=item["preco"] * item["qtd"],
+        )
+        db.add(product)
+
+    project.status = "READY"
+    db.commit()
+    db.refresh(project)
+
+    product_count = db.query(Product).filter(Product.project_id == project.id).count()
+
+    return ProjectResponse(
+        id=str(project.id),
+        name=project.name,
+        pdf_filename=project.pdf_filename,
+        status=project.status,
+        created_at=project.created_at,
+        product_count=product_count,
+    )
+
+
 @router.get("/{project_id}", response_model=ProjectResponse)
 def get_project(
     project_id: str,
@@ -239,7 +306,7 @@ def get_project(
     ).first()
 
     if not project:
-        raise HTTPException(status_code=404, detail="Projeto não encontrado")
+        raise HTTPException(status_code=404, detail="Projeto nÃ£o encontrado")
 
     count = db.query(Product).filter(Product.project_id == project.id).count()
 
@@ -265,8 +332,9 @@ def delete_project(
     ).first()
 
     if not project:
-        raise HTTPException(status_code=404, detail="Projeto não encontrado")
+        raise HTTPException(status_code=404, detail="Projeto nÃ£o encontrado")
 
     db.delete(project)
     db.commit()
     return {"detail": "Projeto removido com sucesso"}
+

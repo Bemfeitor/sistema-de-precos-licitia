@@ -1,0 +1,390 @@
+"""
+Marketplace Service - Unified Price Search Pipeline
+
+Pipeline:
+  1. Mercado Livre Official API (primary, ~80% hit rate)
+  2. OpenAI web_search_preview (fallback for remaining ~20%)
+  3. Firecrawl scraping (legacy fallback, last resort)
+"""
+
+import asyncio
+import logging
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from app.config import get_settings
+from app.services.ml_api_client import _is_offer_compatible, get_ml_client
+
+logger = logging.getLogger(__name__)
+
+INVALID_PRODUCT_QUERY_RE = re.compile(
+    r"^(?:descri(?:cao|ção)|observa(?:cao|ção)|item|lote|marca|quant(?:idade)?|un(?:id(?:ade)?)?|valor(?:es)?)\:?$",
+    re.IGNORECASE,
+)
+
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, round(len(text) / 4))
+
+
+def _build_product_query(product) -> str:
+    return (getattr(product, "description", None) or getattr(product, "name", "") or "").strip()
+
+
+def _is_invalid_product_query(query: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(query or "")).strip()
+    if not normalized or len(normalized) < 3:
+        return True
+    return bool(INVALID_PRODUCT_QUERY_RE.match(normalized))
+
+
+def _is_direct_product_url(url: str) -> bool:
+    normalized = (url or "").strip().lower()
+    if not normalized:
+        return False
+
+    if "click1.mercadolivre.com.br" in normalized:
+        return True
+    if "mercadolivre.com.br" in normalized:
+        return "lista.mercadolivre.com.br" not in normalized and (
+            "/p/" in normalized or "/_jm" in normalized or "/mlb-" in normalized
+        )
+    if "magazineluiza.com.br" in normalized:
+        return "/p/" in normalized and "/busca/" not in normalized
+    if "amazon.com.br" in normalized:
+        return "/dp/" in normalized or "/gp/product/" in normalized
+    if "shopee.com.br" in normalized:
+        return "/product/" in normalized
+    return True
+
+
+# ==============================================================================
+# OpenAI Web Search Fallback
+# ==============================================================================
+
+async def _openai_web_search(product_name: str, num_offers: int = 3) -> List[Dict[str, Any]]:
+    """Search using OpenAI Responses API with web_search_preview tool."""
+    settings = get_settings()
+    if not settings.OPENAI_API_KEY:
+        logger.warning("OPENAI_API_KEY not set, skipping OpenAI web search fallback")
+        return []
+
+    try:
+        import aiohttp
+
+        prompt = (
+            f"Pesquise o preço atual do produto '{product_name}' em lojas online brasileiras "
+            f"(Mercado Livre, Amazon Brasil, Magazine Luiza, Shopee). "
+            f"Retorne até {num_offers} resultados no formato JSON array: "
+            f'[{{"marketplace": "nome_loja", "title": "titulo_produto", "price": 123.45, "url": "link_direto"}}]. '
+            f"Apenas JSON, sem texto adicional."
+        )
+
+        logger.info(
+            "OpenAI web_search prompt para '%s': %s chars (~%s tokens).",
+            product_name,
+            len(prompt),
+            _estimate_tokens(prompt),
+        )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.OPENAI_MODEL,
+                    "tools": [{"type": "web_search_preview"}],
+                    "input": prompt,
+                },
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"OpenAI web_search failed ({resp.status}): {error_text}")
+                    return []
+
+                data = await resp.json()
+                usage = data.get("usage") or {}
+                if usage:
+                    logger.info(
+                        "OpenAI web_search usage input=%s output=%s total=%s",
+                        usage.get("input_tokens"),
+                        usage.get("output_tokens"),
+                        usage.get("total_tokens"),
+                    )
+
+                text_content = ""
+                for item in data.get("output", []):
+                    if item.get("type") == "message":
+                        for content in item.get("content", []):
+                            if content.get("type") == "output_text":
+                                text_content = content.get("text", "")
+
+                if not text_content:
+                    return []
+
+                import json
+
+                json_match = re.search(r"\[.*\]", text_content, re.DOTALL)
+                if not json_match:
+                    return []
+
+                results = json.loads(json_match.group())
+                offers = []
+                for result in results:
+                    price = result.get("price")
+                    if not price or float(price) <= 0:
+                        continue
+                    title = result.get("title", product_name)
+                    url = result.get("url", "")
+                    if not _is_direct_product_url(url):
+                        continue
+                    if not _is_offer_compatible(product_name, title, []):
+                        continue
+                    offers.append(
+                        {
+                            "marketplace": result.get("marketplace", "Web Search"),
+                            "title": title,
+                            "price": float(price),
+                            "shipping": 0.0,
+                            "delivery_days": 5,
+                            "seller_rating": 4.0,
+                            "url": url,
+                        }
+                    )
+
+                logger.info(f"OpenAI web_search: {len(offers)} results for '{product_name}'")
+                return offers
+
+    except Exception as error:
+        logger.error(f"OpenAI web_search error for '{product_name}': {error}")
+        return []
+
+
+# ==============================================================================
+# Legacy Firecrawl fallback
+# ==============================================================================
+
+async def _firecrawl_search(product_name: str, num_offers: int = 3) -> List[Dict[str, Any]]:
+    """Legacy Firecrawl scraping fallback. Only used when both ML API and OpenAI fail."""
+    try:
+        from app.services.backend_pipeline_core import (
+            ExtractedItem,
+            FirecrawlScraper,
+            MercadoLivreURLBuilder,
+            PriceParser,
+        )
+
+        url_builder = MercadoLivreURLBuilder()
+        item = ExtractedItem(nome=product_name, pagina_origem=1)
+        itens_url = url_builder.construir_urls([item])
+
+        async with FirecrawlScraper() as scraper:
+            scraped_data = await scraper.processar_lote(itens_url, max_concurrent=1)
+
+        parser = PriceParser()
+        resultados = await parser.processar_lote([scraped for scraped in scraped_data if scraped.markdown])
+
+        offers = []
+        for result in resultados:
+            if (result.status == "success" or result.status == "partial_error") and result.preco:
+                title = result.titulo_encontrado or product_name
+                url = result.link_produto or result.search_url
+                if not _is_direct_product_url(url):
+                    continue
+                if not _is_offer_compatible(product_name, title, []):
+                    continue
+                offers.append(
+                    {
+                        "marketplace": "ML Scraping",
+                        "title": title,
+                        "price": result.preco,
+                        "shipping": 0.0,
+                        "delivery_days": 2,
+                        "seller_rating": 5.0,
+                        "url": url,
+                    }
+                )
+
+        logger.info(f"Firecrawl fallback: {len(offers)} results for '{product_name}'")
+        return offers
+    except Exception as error:
+        logger.error(f"Firecrawl fallback failed for '{product_name}': {error}")
+        return []
+
+
+# ==============================================================================
+# Unified Search Functions (Public API)
+# ==============================================================================
+
+async def search_marketplace_prices(product_name: str, num_offers: int = 5) -> List[Dict[str, Any]]:
+    """
+    Unified price search pipeline:
+    1. ML Official API (fast, reliable, structured)
+    2. OpenAI web_search (multi-marketplace fallback)
+    3. Firecrawl scraping (legacy last resort)
+    """
+    settings = get_settings()
+    if _is_invalid_product_query(product_name):
+        logger.warning(f"Skipping invalid marketplace query: {product_name!r}")
+        return []
+
+    ml_client = get_ml_client()
+    offers = [
+        offer for offer in await ml_client.search_product(product_name, limit=num_offers)
+        if _is_direct_product_url(offer.get("url", ""))
+    ]
+
+    if offers:
+        return offers
+
+    if settings.ML_OFFICIAL_ONLY:
+        logger.info(f"ML official-only mode: 0 offers for '{product_name}'")
+        return []
+
+    logger.info(f"ML API returned 0 results for '{product_name}', trying OpenAI web_search...")
+
+    offers = await _openai_web_search(product_name, num_offers)
+    if offers:
+        return offers
+
+    logger.info(f"OpenAI also returned 0 results for '{product_name}', trying Firecrawl...")
+    return await _firecrawl_search(product_name, num_offers)
+
+
+async def search_additional_offer(product_name: str, marketplace: str = None) -> Optional[Dict[str, Any]]:
+    """Search for one additional offer."""
+    offers = await search_marketplace_prices(product_name, 1)
+    return offers[0] if offers else None
+
+
+async def search_and_save_offers(project_id: str, db=None):
+    """Orchestrate search and save for all products in a project."""
+    from app.database import SessionLocal
+    from app.models.offer import Offer
+    from app.models.product import Product
+    from app.services.marketplace_service_v4 import search_with_best_sellers_priority
+
+    standalone = False
+    if db is None:
+        db = SessionLocal()
+        standalone = True
+
+    try:
+        products = db.query(Product).filter(Product.project_id == project_id).all()
+        total_offers = 0
+        batch_size = 50
+        semaphore = asyncio.Semaphore(5)
+
+        async def process_single_product(product_id):
+            async with semaphore:
+                worker_db = SessionLocal()
+                try:
+                    product = worker_db.query(Product).filter(Product.id == product_id).first()
+                    if not product:
+                        return 0
+
+                    existing = worker_db.query(Offer).filter(Offer.product_id == product.id).count()
+                    if existing > 0:
+                        product.status = "SUCCESS"
+                        worker_db.commit()
+                        return 0
+
+                    query = _build_product_query(product)
+                    if _is_invalid_product_query(query):
+                        logger.warning(f"Skipping invalid product query: {query!r}")
+                        product.status = "ERROR_NOT_FOUND"
+                        worker_db.commit()
+                        return 0
+
+                    offers_data, metrics = await search_with_best_sellers_priority(
+                        query=query,
+                        quantidade_desejada=product.quantity or 1,
+                        valor_maximo=product.valor_unitario_estimado or 0,
+                    )
+                    if not offers_data:
+                        offers_data = await search_marketplace_prices(query, num_offers=3)
+
+                    if metrics.url_menor_preco:
+                        for offer_data in offers_data:
+                            if offer_data.get("url") == metrics.url_menor_preco:
+                                offer_data["marketplace"] = metrics.marketplace_label
+                                if metrics.preco_validado_no_link:
+                                    offer_data["price"] = metrics.menor_preco
+
+                    count = 0
+                    if offers_data:
+                        for offer_data in offers_data:
+                            if not _is_direct_product_url(offer_data.get("url", "")):
+                                continue
+
+                            offer = Offer(
+                                product_id=product.id,
+                                marketplace=offer_data["marketplace"],
+                                title=offer_data["title"],
+                                price=offer_data["price"],
+                                shipping=offer_data.get("shipping", 0.0),
+                                delivery_days=offer_data.get("delivery_days", 3),
+                                seller_rating=offer_data.get("seller_rating", 5.0),
+                                url=offer_data.get("url", ""),
+                                validated_price=offer_data.get("price_validated"),
+                                price_match=bool(offer_data.get("price_match", False)),
+                                validation_method=offer_data.get("validation_method"),
+                                is_best_seller=bool(
+                                    offer_data.get("is_best_seller", False)
+                                    or offer_data.get("is_mais_vendido", False)
+                                ),
+                                sold_quantity=offer_data.get("sold_quantity"),
+                                validation_checked_at=(
+                                    datetime.utcnow()
+                                    if offer_data.get("validation_method") or offer_data.get("price_match")
+                                    else None
+                                ),
+                            )
+                            worker_db.add(offer)
+                            count += 1
+
+                        if count > 0:
+                            product.status = "SUCCESS"
+                        else:
+                            logger.warning(f"No direct offers found for: {_build_product_query(product)}")
+                            product.status = "ERROR_NOT_FOUND"
+                    else:
+                        logger.warning(f"No offers found for: {_build_product_query(product)}")
+                        product.status = "ERROR_NOT_FOUND"
+
+                    worker_db.commit()
+                    return count
+                except Exception as error:
+                    logger.error(f"Error searching product {product_id}: {error}")
+                    worker_db.rollback()
+                    return 0
+                finally:
+                    worker_db.close()
+
+        for start in range(0, len(products), batch_size):
+            batch = products[start:start + batch_size]
+            logger.info(
+                "Processando lote de busca %s-%s de %s produtos.",
+                start + 1,
+                start + len(batch),
+                len(products),
+            )
+            tasks = [process_single_product(product.id) for product in batch]
+            results = await asyncio.gather(*tasks)
+            total_offers += sum(results)
+
+            if start + batch_size < len(products):
+                logger.info("Lote concluido, aguardando proximo lote de ate 50 produtos.")
+                await asyncio.sleep(2)
+
+        return total_offers
+    finally:
+        if standalone:
+            db.close()

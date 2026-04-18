@@ -1,26 +1,31 @@
 import type { Metadata } from "next";
+import { DM_Sans, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
 
+const bodyFont = DM_Sans({
+  subsets: ["latin"],
+  variable: "--font-body",
+});
+
+const displayFont = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-display",
+});
+
 export const metadata: Metadata = {
-  title: "Preço Inteligente — Cotação Automatizada de Preços",
+  title: "Preço Inteligente | Inteligência de Cotação",
   description:
-    "Plataforma SaaS de cotação inteligente. Envie PDFs com listas de produtos e receba comparação automática de preços de marketplaces.",
+    "Plataforma de cotação inteligente para extrair itens de PDFs, comparar ofertas e gerar orçamentos finais.",
 };
 
 export default function RootLayout({
   children,
-}: {
+}: Readonly<{
   children: React.ReactNode;
-}) {
+}>) {
   return (
-    <html lang="pt-BR">
-      <head>
-        <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
-          rel="stylesheet"
-        />
-      </head>
+    <html lang="pt-BR" className={`${bodyFont.variable} ${displayFont.variable}`}>
       <body>
         <AuthProvider>{children}</AuthProvider>
       </body>

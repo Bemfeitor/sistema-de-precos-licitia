@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer
+from sqlalchemy import Boolean, Column, String, DateTime, ForeignKey, Float, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -18,6 +18,12 @@ class Offer(Base):
     delivery_days = Column(Integer, nullable=True)
     seller_rating = Column(Float, nullable=True)
     url = Column(String, nullable=True)
+    validated_price = Column(Float, nullable=True)
+    price_match = Column(Boolean, nullable=False, default=False)
+    validation_method = Column(String, nullable=True)
+    is_best_seller = Column(Boolean, nullable=False, default=False)
+    sold_quantity = Column(Integer, nullable=True)
+    validation_checked_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     product = relationship("Product", back_populates="offers")

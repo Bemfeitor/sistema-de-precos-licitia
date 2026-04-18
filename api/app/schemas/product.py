@@ -18,6 +18,9 @@ class ProductResponse(BaseModel):
     min_price: Optional[float] = None
     best_marketplace: Optional[str] = None
     best_offer_url: Optional[str] = None
+    best_validation_method: Optional[str] = None
+    best_price_match: Optional[bool] = None
+    best_is_best_seller: Optional[bool] = None
     mid_price: Optional[float] = None
     mid_marketplace: Optional[str] = None
     mid_offer_url: Optional[str] = None

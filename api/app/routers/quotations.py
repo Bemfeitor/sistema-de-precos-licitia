@@ -11,6 +11,7 @@ from app.models.offer import Offer
 from app.models.quotation import Quotation
 from app.schemas.quotation import QuotationResponse, QuotationItem
 from app.services.excel_service import generate_quotation_excel
+from app.services.offer_selection import select_best_offer
 from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/quotations", tags=["Quotations"])
@@ -49,9 +50,8 @@ def generate_quotation(
 
     for product in products:
         # Get best offer (lowest price)
-        best_offer = db.query(Offer).filter(
-            Offer.product_id == product.id
-        ).order_by(Offer.price).first()
+        offers = db.query(Offer).filter(Offer.product_id == product.id).all()
+        best_offer = select_best_offer(offers)
 
         if not best_offer:
             continue
@@ -121,9 +121,8 @@ def get_quotation(
 
     for q in quotations:
         product = db.query(Product).filter(Product.id == q.product_id).first()
-        best_offer = db.query(Offer).filter(
-            Offer.product_id == q.product_id
-        ).order_by(Offer.price).first()
+        offers = db.query(Offer).filter(Offer.product_id == q.product_id).all()
+        best_offer = select_best_offer(offers)
 
         if product:
             total_cost += q.cost * product.quantity
@@ -171,9 +170,8 @@ def export_quotation(
     items = []
     for q in quotations:
         product = db.query(Product).filter(Product.id == q.product_id).first()
-        best_offer = db.query(Offer).filter(
-            Offer.product_id == q.product_id
-        ).order_by(Offer.price).first()
+        offers = db.query(Offer).filter(Offer.product_id == q.product_id).all()
+        best_offer = select_best_offer(offers)
 
         if product:
             items.append({

@@ -1,0 +1,49 @@
+name: god-mode-workflow
+description: >
+  Workflow de orquestração do God Mode Squad.
+  Ativa todos os agentes e coordena o desenvolvimento.
+
+version: 1.0.0
+triggers:
+  - type: command
+    pattern: "*activate god-model"
+  - type: command
+    pattern: "*god-mode"
+
+steps:
+  - task: initialize-squad
+    agent: god-model
+    action: activate-squad
+    
+  - task: analyze-codebase
+    agent: analyst
+    action: analyze
+    params:
+      scope: full
+      
+  - task: review-architecture
+    agent: architect
+    action: review
+    params:
+      focus: current-state
+      
+  - task: validate-quality
+    agent: qa
+    action: validate
+    params:
+      scope: critical-paths
+      
+  - task: report-status
+    agent: god-model
+    action: status-report
+
+on_complete:
+  - notify: user
+  - log: squad-activation
+  
+agents_required:
+  - god-model
+  - dev
+  - qa
+  - architect
+  - analyst

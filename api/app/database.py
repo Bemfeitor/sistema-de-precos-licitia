@@ -5,7 +5,7 @@ from app.config import get_settings
 settings = get_settings()
 
 engine = create_engine(
-    settings.DATABASE_URL, 
+    settings.DATABASE_URL.replace("postgresql://", "postgresql+pg8000://"), 
     pool_pre_ping=True, # Restaurado para estabilidade. Evita 'stale connections' que quebram o site.
     pool_size=10, 
     max_overflow=20,

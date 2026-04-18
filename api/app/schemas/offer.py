@@ -13,6 +13,12 @@ class OfferResponse(BaseModel):
     delivery_days: Optional[int] = None
     seller_rating: Optional[float] = None
     url: Optional[str] = None
+    validated_price: Optional[float] = None
+    price_match: bool = False
+    validation_method: Optional[str] = None
+    is_best_seller: bool = False
+    sold_quantity: Optional[int] = None
+    validation_checked_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:

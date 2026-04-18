@@ -27,6 +27,12 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.log
+api/.ml_token_cache.json
+api/uvicorn_*.log
+next_*.log
+restart.log
+final_restart.log
 
 # local env files
 .env*.local

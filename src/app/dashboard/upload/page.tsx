@@ -1,398 +1,405 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { api } from "@/lib/api";
-import { Upload, FileText, X, CheckCircle2, AlertCircle, Loader2, Edit3, Package } from "lucide-react";
+import type { Project } from "@/lib/types";
+import {
+  CheckCircle2,
+  Edit3,
+  FileText,
+  Loader2,
+  Package,
+  Sparkles,
+  Upload,
+} from "lucide-react";
+
+const pagesPattern = /^\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*$/;
+
+function isValidPagesConfig(value: string) {
+  return value.trim().length === 0 || pagesPattern.test(value);
+}
 
 export default function UploadPage() {
-    const [mode, setMode] = useState<"pdf" | "manual">("pdf");
+  const router = useRouter();
+  const [mode, setMode] = useState<"pdf" | "manual">("pdf");
+  const [file, setFile] = useState<File | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [pagesConfig, setPagesConfig] = useState("");
+  const [manualProjectName, setManualProjectName] = useState("");
+  const [manualProductName, setManualProductName] = useState("");
+  const [manualQuantity, setManualQuantity] = useState("1");
+  const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState<Project | null>(null);
+  const [error, setError] = useState("");
 
-    // PDF State
-    const [file, setFile] = useState<File | null>(null);
-    const [projectName, setProjectName] = useState("");
-    const [dragging, setDragging] = useState(false);
+  const pageInputValid = useMemo(() => isValidPagesConfig(pagesConfig), [pagesConfig]);
 
-    // Manual State
-    const [manualProjectName, setManualProjectName] = useState("");
-    const [manualProductName, setManualProductName] = useState("");
-    const [manualQuantity, setManualQuantity] = useState("1");
+  const handleFile = (candidate?: File | null) => {
+    if (!candidate) {
+      return;
+    }
 
-    // Shared State
-    const [uploading, setUploading] = useState(false);
-    const [progress, setProgress] = useState(0);
-    const [result, setResult] = useState<any>(null);
-    const [error, setError] = useState("");
-    const router = useRouter();
+    if (candidate.type !== "application/pdf") {
+      setError("Somente arquivos PDF são aceitos.");
+      return;
+    }
 
-    const handleDrop = useCallback((e: React.DragEvent) => {
-        e.preventDefault();
-        setDragging(false);
-        const dropped = e.dataTransfer.files[0];
-        if (dropped?.type === "application/pdf") {
-            setFile(dropped);
-            setError("");
-        } else {
-            setError("Apenas arquivos PDF são aceitos");
-        }
-    }, []);
+    setFile(candidate);
+    setError("");
+  };
 
-    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const selected = e.target.files?.[0];
-        if (selected) {
-            setFile(selected);
-            setError("");
-        }
-    };
+  const handleUploadPdf = async () => {
+    if (!file) {
+      setError("Selecione um PDF para continuar.");
+      return;
+    }
 
-    const handleUploadPdf = async () => {
-        if (!file) return;
-        setUploading(true);
-        setProgress(0);
-        setError("");
-        
-        const progressInterval = setInterval(() => {
-            setProgress(prev => {
-                if (prev >= 95) return prev;
-                const next = prev + Math.random() * 5;
-                return next > 95 ? 95 : next;
-            });
-        }, 500);
+    if (!pageInputValid) {
+      setError("Informe as páginas no formato correto. Exemplo: 1, 3, 5-7.");
+      return;
+    }
 
-        try {
-            const data: any = await api.projects.upload(file, projectName || file.name.replace(".pdf", ""), "");
-            clearInterval(progressInterval);
-            setProgress(100);
-            setTimeout(() => setResult(data), 500);
-            
-            setTimeout(() => {
-                router.push(`/dashboard/products?projectId=${data.id}`);
-            }, 3000);
-        } catch (err: any) {
-            clearInterval(progressInterval);
-            setError(err.message || "Erro ao processar PDF");
-        } finally {
-            setUploading(false);
-        }
-    };
+    setUploading(true);
+    setProgress(8);
+    setError("");
 
-    const handleUploadManual = async () => {
-        if (!manualProductName.trim()) {
-            setError("O nome do produto é obrigatório");
-            return;
-        }
+    const progressTimer = window.setInterval(() => {
+      setProgress((current) => (current >= 92 ? current : current + Math.random() * 6));
+    }, 450);
 
-        setUploading(true);
-        setProgress(0);
-        setError("");
+    try {
+      const data = await api.projects.upload(
+        file,
+        projectName.trim() || file.name.replace(/\.pdf$/i, ""),
+        pagesConfig.trim()
+      );
 
-        const progressInterval = setInterval(() => {
-            setProgress(prev => {
-                if (prev >= 95) return prev;
-                const next = prev + 10;
-                return next > 95 ? 95 : next;
-            });
-        }, 300);
+      window.clearInterval(progressTimer);
+      setProgress(100);
+      setResult(data);
 
-        try {
-            const qty = parseInt(manualQuantity) || 1;
-            const data: any = await api.projects.uploadManual(
-                manualProjectName || "Projeto Manual",
-                manualProductName,
-                qty
-            );
-            clearInterval(progressInterval);
-            setProgress(100);
-            setTimeout(() => setResult(data), 500);
-            
-            setTimeout(() => {
-                router.push(`/dashboard/products?projectId=${data.id}`);
-            }, 3000);
-        } catch (err: any) {
-            clearInterval(progressInterval);
-            setError(err.message || "Erro ao processar item");
-        } finally {
-            setUploading(false);
-        }
-    };
+      window.setTimeout(() => {
+        router.push(`/dashboard/products?projectId=${data.id}`);
+      }, 1600);
+    } catch (err: unknown) {
+      window.clearInterval(progressTimer);
+      setError(err instanceof Error ? err.message : "Erro ao processar o PDF.");
+      setProgress(0);
+    } finally {
+      setUploading(false);
+    }
+  };
 
-    return (
-        <div>
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-                <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 4 }}>Nova Cotação</h1>
-                <p style={{ color: "var(--text-secondary)", fontSize: 15, marginBottom: 32 }}>
-                    Envie uma lista em PDF ou digite os dados de um único produto para análise
-                </p>
-            </motion.div>
+  const handleUploadManual = async () => {
+    if (!manualProductName.trim()) {
+      setError("Informe pelo menos um produto para continuar.");
+      return;
+    }
 
-            {!result ? (
-                <div style={{ maxWidth: 600 }}>
-                    {/* Mode Toggle */}
-                    <div style={{ display: "flex", gap: 8, marginBottom: 24, padding: 4, background: "rgba(255,255,255,0.03)", borderRadius: 12, border: "1px solid var(--border)" }}>
-                        <button
-                            onClick={() => { setMode("pdf"); setError(""); }}
-                            style={{
-                                flex: 1,
-                                padding: "10px 0",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                gap: 8,
-                                borderRadius: 8,
-                                background: mode === "pdf" ? "var(--bg-elevated)" : "transparent",
-                                color: mode === "pdf" ? "var(--text-primary)" : "var(--text-secondary)",
-                                border: mode === "pdf" ? "1px solid var(--border)" : "1px solid transparent",
-                                boxShadow: mode === "pdf" ? "0 4px 12px rgba(0,0,0,0.1)" : "none",
-                                fontWeight: 500,
-                                fontSize: 14,
-                                cursor: "pointer",
-                                transition: "all 0.2s"
-                            }}
-                        >
-                            <FileText size={16} /> Lista em PDF
-                        </button>
-                        <button
-                            onClick={() => { setMode("manual"); setError(""); }}
-                            style={{
-                                flex: 1,
-                                padding: "10px 0",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                gap: 8,
-                                borderRadius: 8,
-                                background: mode === "manual" ? "var(--bg-elevated)" : "transparent",
-                                color: mode === "manual" ? "var(--text-primary)" : "var(--text-secondary)",
-                                border: mode === "manual" ? "1px solid var(--border)" : "1px solid transparent",
-                                boxShadow: mode === "manual" ? "0 4px 12px rgba(0,0,0,0.1)" : "none",
-                                fontWeight: 500,
-                                fontSize: 14,
-                                cursor: "pointer",
-                                transition: "all 0.2s"
-                            }}
-                        >
-                            <Edit3 size={16} /> Digitar 1 Item
-                        </button>
-                    </div>
+    setUploading(true);
+    setProgress(15);
+    setError("");
 
-                    <AnimatePresence mode="wait">
-                        <motion.div
-                            key={mode}
-                            initial={{ opacity: 0, x: mode === "pdf" ? -20 : 20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            exit={{ opacity: 0, x: mode === "pdf" ? 20 : -20 }}
-                            transition={{ duration: 0.2 }}
-                            className="glass-card"
-                            style={{ padding: 32 }}
-                        >
-                            {mode === "pdf" ? (
-                                // PDF Mode
-                                <>
-                                    <div style={{ marginBottom: 24 }}>
-                                        <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>
-                                            Nome do projeto (opcional)
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={projectName}
-                                            onChange={(e) => setProjectName(e.target.value)}
-                                            placeholder="Ex: Orçamento Material de Escritório"
-                                            className="input-field"
-                                        />
-                                    </div>
+    const progressTimer = window.setInterval(() => {
+      setProgress((current) => (current >= 92 ? current : current + 12));
+    }, 280);
 
-                                    <div
-                                        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-                                        onDragLeave={() => setDragging(false)}
-                                        onDrop={handleDrop}
-                                        onClick={() => document.getElementById("file-input")?.click()}
-                                        style={{
-                                            border: `2px dashed ${dragging ? "var(--accent)" : "var(--border)"}`,
-                                            borderRadius: 16,
-                                            padding: 48,
-                                            textAlign: "center",
-                                            cursor: "pointer",
-                                            background: dragging ? "var(--accent-glow)" : "transparent",
-                                            transition: "all 0.2s",
-                                            marginBottom: 24,
-                                        }}
-                                    >
-                                        <input id="file-input" type="file" accept=".pdf" onChange={handleFileSelect} style={{ display: "none" }} />
-                                        <Upload size={40} color={dragging ? "var(--accent)" : "var(--text-muted)"} style={{ marginBottom: 16 }} />
-                                        <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
-                                            {dragging ? "Solte o arquivo aqui" : "Arraste e solte o PDF aqui"}
-                                        </p>
-                                        <p style={{ fontSize: 13, color: "var(--text-muted)" }}>ou clique para selecionar (máx 50MB)</p>
-                                    </div>
+    try {
+      const data = await api.projects.uploadManual(
+        manualProjectName.trim() || "Projeto Manual",
+        manualProductName.trim(),
+        Math.max(1, parseInt(manualQuantity, 10) || 1)
+      );
 
-                                    {file && (
-                                        <motion.div
-                                            initial={{ opacity: 0, height: 0 }}
-                                            animate={{ opacity: 1, height: "auto" }}
-                                            style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: "rgba(99,102,241,0.08)", borderRadius: 10, marginBottom: 24 }}
-                                        >
-                                            <FileText size={20} color="var(--accent)" />
-                                            <div style={{ flex: 1 }}>
-                                                <div style={{ fontSize: 14, fontWeight: 500 }}>{file.name}</div>
-                                                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{(file.size / 1024 / 1024).toFixed(2)} MB</div>
-                                            </div>
-                                            <button onClick={(e) => { e.stopPropagation(); setFile(null); }} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
-                                                <X size={18} />
-                                            </button>
-                                        </motion.div>
-                                    )}
+      window.clearInterval(progressTimer);
+      setProgress(100);
+      setResult(data);
 
-                                    {error && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, color: "var(--danger)", fontSize: 13, marginBottom: 16 }}>
-                                            <AlertCircle size={16} />
-                                            {error}
-                                        </div>
-                                    )}
+      window.setTimeout(() => {
+        router.push(`/dashboard/products?projectId=${data.id}`);
+      }, 1600);
+    } catch (err: unknown) {
+      window.clearInterval(progressTimer);
+      setError(err instanceof Error ? err.message : "Erro ao criar o projeto manual.");
+      setProgress(0);
+    } finally {
+      setUploading(false);
+    }
+  };
 
-                                    {uploading && (
-                                        <div style={{ marginBottom: 20 }}>
-                                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 13, fontWeight: 500 }}>
-                                                <span style={{ color: "var(--accent)" }}>Analisando dados...</span>
-                                                <span style={{ color: "var(--text-muted)" }}>{Math.round(progress)}%</span>
-                                            </div>
-                                            <div style={{ width: "100%", height: 6, background: "rgba(255,255,255,0.05)", borderRadius: 3, overflow: "hidden" }}>
-                                                <motion.div 
-                                                    initial={{ width: 0 }}
-                                                    animate={{ width: `${progress}%` }}
-                                                    style={{ height: "100%", background: "var(--accent)", boxShadow: "0 0 10px var(--accent-glow)" }}
-                                                />
-                                            </div>
-                                        </div>
-                                    )}
+  return (
+    <div style={{ display: "grid", gap: 24 }}>
+      <motion.section
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="glass-card"
+        style={{ padding: "clamp(1.25rem, 2.5vw, 2rem)" }}
+      >
+        <div style={{ display: "grid", gap: 18 }}>
+          <span className="section-eyebrow">
+            <Sparkles size={14} />
+            Fluxo de entrada
+          </span>
 
-                                    <button onClick={handleUploadPdf} disabled={!file || uploading} className="btn-primary" style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "14px 24px" }}>
-                                        {uploading ? <><Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> Processando PDF...</> : <><Upload size={18} /> Enviar e Processar</>}
-                                    </button>
-                                </>
-                            ) : (
-                                // Manual Mode
-                                <>
-                                    <div style={{ marginBottom: 20 }}>
-                                        <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>
-                                            Nome do projeto (opcional)
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={manualProjectName}
-                                            onChange={(e) => setManualProjectName(e.target.value)}
-                                            placeholder="Ex: Cotação Avulsa"
-                                            className="input-field"
-                                        />
-                                    </div>
-
-                                    <div style={{ marginBottom: 20 }}>
-                                        <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>
-                                            Nome do Produto *
-                                        </label>
-                                        <div style={{ position: "relative" }}>
-                                            <Package size={18} color="var(--text-muted)" style={{ position: "absolute", left: 14, top: 13 }} />
-                                            <input
-                                                type="text"
-                                                value={manualProductName}
-                                                onChange={(e) => setManualProductName(e.target.value)}
-                                                placeholder="Ex: iPhone 13 128GB"
-                                                className="input-field"
-                                                style={{ paddingLeft: 42 }}
-                                                autoFocus
-                                            />
-                                        </div>
-                                    </div>
-
-                                    <div style={{ marginBottom: 32 }}>
-                                        <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>
-                                            Quantidade
-                                        </label>
-                                        <input
-                                            type="number"
-                                            min="1"
-                                            value={manualQuantity}
-                                            onChange={(e) => setManualQuantity(e.target.value)}
-                                            placeholder="1"
-                                            className="input-field"
-                                            style={{ width: "120px" }}
-                                        />
-                                    </div>
-
-                                    {error && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, color: "var(--danger)", fontSize: 13, marginBottom: 16 }}>
-                                            <AlertCircle size={16} />
-                                            {error}
-                                        </div>
-                                    )}
-
-                                    {uploading && (
-                                        <div style={{ marginBottom: 20 }}>
-                                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 13, fontWeight: 500 }}>
-                                                <span style={{ color: "var(--accent)" }}>Buscando ofertas...</span>
-                                                <span style={{ color: "var(--text-muted)" }}>{Math.round(progress)}%</span>
-                                            </div>
-                                            <div style={{ width: "100%", height: 6, background: "rgba(255,255,255,0.05)", borderRadius: 3, overflow: "hidden" }}>
-                                                <motion.div 
-                                                    initial={{ width: 0 }}
-                                                    animate={{ width: `${progress}%` }}
-                                                    style={{ height: "100%", background: "var(--accent)", boxShadow: "0 0 10px var(--accent-glow)" }}
-                                                />
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    <button onClick={handleUploadManual} disabled={!manualProductName.trim() || uploading} className="btn-primary" style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "14px 24px" }}>
-                                        {uploading ? <><Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> Buscando ofertas...</> : <><CheckCircle2 size={18} /> Iniciar Análise</>}
-                                    </button>
-                                </>
-                            )}
-                        </motion.div>
-                    </AnimatePresence>
-                </div>
-            ) : (
-                <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="glass-card"
-                    style={{ padding: 32, maxWidth: 600, textAlign: "center" }}
-                >
-                    <div
-                        style={{ width: 64, height: 64, borderRadius: "50%", background: "rgba(34,197,94,0.15)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}
-                    >
-                        <CheckCircle2 size={32} color="#22c55e" />
-                    </div>
-                    <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
-                        {mode === "pdf" ? "PDF Processado!" : "Item Adicionado!"}
-                    </h2>
-                    <p style={{ color: "var(--text-secondary)", fontSize: 14, marginBottom: 8 }}>
-                        Projeto: <strong>{result.name}</strong>
-                    </p>
-                    <p style={{ color: "var(--text-secondary)", fontSize: 14, marginBottom: 24 }}>
-                        {result.product_count} produtos prontos para análise.
-                        <br />
-                        <span style={{ fontSize: 12, opacity: 0.7 }}>Você será redirecionado em instantes...</span>
-                    </p>
-                    <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-                        <button onClick={() => router.push("/dashboard/products")} className="btn-primary" style={{ padding: "12px 24px" }}>
-                            Ver Produtos
-                        </button>
-                        <button
-                            onClick={() => {
-                                setFile(null);
-                                setResult(null);
-                                setProjectName("");
-                                setManualProjectName("");
-                                setManualProductName("");
-                            }}
-                            className="btn-secondary"
-                            style={{ padding: "12px 24px" }}
-                        >
-                            Novo Upload
-                        </button>
-                    </div>
-                </motion.div>
-            )}
+          <div style={{ display: "grid", gap: 10 }}>
+            <h1 className="page-title">Importe listas e escolha exatamente quais páginas entram na coleta</h1>
+            <p className="page-subtitle">
+              O upload agora aceita seleção livre de páginas, com a mesma lógica de impressão:
+              use `1, 3, 6` para páginas isoladas ou `2-7` para intervalos.
+            </p>
+          </div>
         </div>
-    );
+      </motion.section>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))",
+          gap: 24,
+        }}
+      >
+        <section className="glass-card" style={{ padding: "clamp(1.25rem, 2.5vw, 2rem)" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 22 }}>
+            <button className={mode === "pdf" ? "btn-primary" : "btn-secondary"} onClick={() => setMode("pdf")} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <FileText size={16} />
+              Lista em PDF
+            </button>
+            <button className={mode === "manual" ? "btn-primary" : "btn-secondary"} onClick={() => setMode("manual")} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Edit3 size={16} />
+              Digitar um item
+            </button>
+          </div>
+
+          <AnimatePresence mode="wait">
+            {mode === "pdf" ? (
+              <motion.div
+                key="pdf"
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                style={{ display: "grid", gap: 18 }}
+              >
+                <div style={{ display: "grid", gap: 8 }}>
+                  <label style={{ fontWeight: 700 }}>Nome do projeto</label>
+                  <input
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    className="input-field"
+                    placeholder="Ex: Pregão de suprimentos hospitalares"
+                  />
+                </div>
+
+                <div style={{ display: "grid", gap: 8 }}>
+                  <label style={{ fontWeight: 700 }}>Páginas para coletar os itens</label>
+                  <input
+                    value={pagesConfig}
+                    onChange={(event) => setPagesConfig(event.target.value)}
+                    className="input-field"
+                    placeholder="Ex: 3, 5, 8-12"
+                    style={{
+                      borderColor: pagesConfig && !pageInputValid ? "rgba(251, 113, 133, 0.55)" : undefined,
+                    }}
+                  />
+                  <div className="helper-text">
+                    Aceita páginas separadas por vírgula ou intervalos: `1, 4, 7-10`. Se ficar em branco, o sistema tenta ler o PDF inteiro.
+                  </div>
+                </div>
+
+                <div
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragging(false);
+                    handleFile(event.dataTransfer.files?.[0]);
+                  }}
+                  onClick={() => document.getElementById("pdf-upload-input")?.click()}
+                  className="glass-card"
+                  style={{
+                    padding: "clamp(1.5rem, 5vw, 3rem)",
+                    border: `1px dashed ${dragging ? "rgba(56, 189, 248, 0.58)" : "rgba(148, 163, 184, 0.18)"}`,
+                    background: dragging ? "rgba(56, 189, 248, 0.08)" : "rgba(7, 17, 31, 0.35)",
+                    cursor: "pointer",
+                    display: "grid",
+                    placeItems: "center",
+                    textAlign: "center",
+                    gap: 14,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 64,
+                      height: 64,
+                      borderRadius: 22,
+                      background: "rgba(56, 189, 248, 0.12)",
+                      display: "grid",
+                      placeItems: "center",
+                    }}
+                  >
+                    <Upload size={28} color="#67e8f9" />
+                  </div>
+
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 6 }}>
+                      {file ? file.name : "Arraste o PDF aqui ou clique para selecionar"}
+                    </div>
+                    <div className="helper-text">PDFs de licitação, listas de itens ou documentos com tabelas de compra.</div>
+                  </div>
+
+                  <input
+                    id="pdf-upload-input"
+                    type="file"
+                    accept="application/pdf"
+                    hidden
+                    onChange={(event) => handleFile(event.target.files?.[0])}
+                  />
+                </div>
+
+                <button
+                  onClick={handleUploadPdf}
+                  disabled={uploading}
+                  className="btn-primary"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 52 }}
+                >
+                  {uploading ? <Loader2 size={18} className="animate-spin" /> : <Upload size={18} />}
+                  {uploading ? "Processando PDF..." : "Enviar PDF e extrair itens"}
+                </button>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="manual"
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                style={{ display: "grid", gap: 18 }}
+              >
+                <div style={{ display: "grid", gap: 8 }}>
+                  <label style={{ fontWeight: 700 }}>Nome do projeto</label>
+                  <input
+                    value={manualProjectName}
+                    onChange={(event) => setManualProjectName(event.target.value)}
+                    className="input-field"
+                    placeholder="Ex: Projeto piloto"
+                  />
+                </div>
+
+                <div style={{ display: "grid", gap: 8 }}>
+                  <label style={{ fontWeight: 700 }}>Produto</label>
+                  <input
+                    value={manualProductName}
+                    onChange={(event) => setManualProductName(event.target.value)}
+                    className="input-field"
+                    placeholder="Ex: Caixa d'água em polietileno 1000 litros"
+                  />
+                </div>
+
+                <div style={{ display: "grid", gap: 8, maxWidth: 220 }}>
+                  <label style={{ fontWeight: 700 }}>Quantidade</label>
+                  <input
+                    value={manualQuantity}
+                    onChange={(event) => setManualQuantity(event.target.value)}
+                    className="input-field"
+                    inputMode="numeric"
+                    placeholder="1"
+                  />
+                </div>
+
+                <button
+                  onClick={handleUploadManual}
+                  disabled={uploading}
+                  className="btn-primary"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 52 }}
+                >
+                  {uploading ? <Loader2 size={18} className="animate-spin" /> : <Package size={18} />}
+                  {uploading ? "Criando projeto..." : "Criar projeto manual"}
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </section>
+
+        <aside style={{ display: "grid", gap: 16 }}>
+          <section className="glass-card" style={{ padding: 20 }}>
+            <div style={{ fontWeight: 700, marginBottom: 12 }}>Como preencher as páginas</div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {[
+                { example: "1, 3, 5", meaning: "coleta páginas isoladas" },
+                { example: "4-9", meaning: "coleta do intervalo 4 até 9" },
+                { example: "2-4, 8, 11-12", meaning: "combina intervalos e páginas avulsas" },
+              ].map((item) => (
+                <div key={item.example} className="glass-card" style={{ padding: 14 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>{item.example}</div>
+                  <div className="helper-text">{item.meaning}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="glass-card" style={{ padding: 20 }}>
+            <div style={{ fontWeight: 700, marginBottom: 12 }}>Status do processamento</div>
+
+            {uploading && (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ height: 10, borderRadius: 999, background: "rgba(148, 163, 184, 0.12)", overflow: "hidden" }}>
+                  <div
+                    style={{
+                      width: `${progress}%`,
+                      height: "100%",
+                      background: "var(--gradient-primary)",
+                      transition: "width 0.25s ease",
+                    }}
+                  />
+                </div>
+                <div className="helper-text">Preparando extração, interpretando o documento e sincronizando os itens.</div>
+              </div>
+            )}
+
+            {!uploading && result && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 12,
+                  padding: 16,
+                  borderRadius: 16,
+                  background: "rgba(52, 211, 153, 0.1)",
+                  border: "1px solid rgba(52, 211, 153, 0.18)",
+                }}
+              >
+                <CheckCircle2 size={20} color="#86efac" />
+                <div>
+                  <div style={{ fontWeight: 700 }}>Projeto criado com sucesso</div>
+                  <div className="helper-text" style={{ marginTop: 4 }}>
+                    Status atual: {result.status}. Você será redirecionado para revisar os itens do projeto.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!uploading && error && (
+              <div
+                style={{
+                  padding: 16,
+                  borderRadius: 16,
+                  background: "rgba(251, 113, 133, 0.1)",
+                  border: "1px solid rgba(251, 113, 133, 0.18)",
+                  color: "#fecdd3",
+                  lineHeight: 1.5,
+                }}
+              >
+                {error}
+              </div>
+            )}
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
 }

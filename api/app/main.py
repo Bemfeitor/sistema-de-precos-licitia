@@ -1,9 +1,11 @@
 import logging
+import threading
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, get_db, Base
+from app.services.schema_bootstrap import ensure_offer_columns
 from app.models.user import User
-from app.routers import auth, projects, products, offers, quotations
+from app.routers import auth, projects, products, offers, quotations, ml_auth
 from fastapi import Depends
 from sqlalchemy.orm import Session
 from app.routers.auth import get_current_user
@@ -14,6 +16,16 @@ from app.models import user, project, product, offer, quotation  # noqa: F401
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _bootstrap_offer_schema_async() -> None:
+    def _run() -> None:
+        try:
+            ensure_offer_columns(engine)
+        except Exception as exc:
+            logger.error(f"Offer schema bootstrap failed: {exc}")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 # Create FastAPI app
 app = FastAPI(
@@ -26,14 +38,16 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False, # We use Bearer tokens in headers, so cookies aren't strictly required
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Create tables (Commented out for Vercel startup performance)
 # In production, tables should be pre-created or managed via migrations.
 # Base.metadata.create_all(bind=engine)
+_bootstrap_offer_schema_async()
 
 # Register routers
 app.include_router(auth.router)
@@ -41,6 +55,7 @@ app.include_router(projects.router)
 app.include_router(products.router)
 app.include_router(offers.router)
 app.include_router(quotations.router)
+app.include_router(ml_auth.router)
 
 
 @app.get("/api/health")

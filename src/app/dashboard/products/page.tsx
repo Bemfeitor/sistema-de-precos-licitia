@@ -1,650 +1,867 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import {
+  Suspense,
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { motion } from "framer-motion";
 import { useSearchParams } from "next/navigation";
-import { api } from "@/lib/api";
 import {
-    Package,
-    Search,
-    Check,
-    X,
-    Clock,
-    ChevronDown,
-    ShoppingBag,
-    Loader2,
-    Trash2,
-    ExternalLink,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  ExternalLink,
+  Loader2,
+  Package,
+  Search,
+  ShoppingBag,
+  Trash2,
+  X,
 } from "lucide-react";
+import { api } from "@/lib/api";
+import type { Product, Project } from "@/lib/types";
+
+const ITEMS_PER_PAGE = 50;
+
+function formatCurrency(value?: number | null) {
+  if (value === null || value === undefined) {
+    return "---";
+  }
+
+  return `R$ ${value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function buildMarginDrafts(products: Product[]) {
+  return Object.fromEntries(products.map((product) => [product.id, String(product.margin ?? 0)]));
+}
+
+function normalizeMarginInput(value: string) {
+  const parsed = Number.parseFloat(value.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getStatusMeta(status: string) {
+  const normalized = status?.toUpperCase?.() || "PENDING";
+
+  if (normalized === "APPROVED") {
+    return { className: "badge-approved", icon: Check, label: "Aprovado" };
+  }
+
+  if (normalized === "DISCARDED") {
+    return { className: "badge-discarded", icon: X, label: "Descartado" };
+  }
+
+  if (normalized === "SUCCESS") {
+    return { className: "badge-approved", icon: Check, label: "Encontrado" };
+  }
+
+  if (normalized === "ERROR" || normalized === "ERROR_NOT_FOUND") {
+    return { className: "badge-discarded", icon: X, label: "Não encontrado" };
+  }
+
+  return { className: "badge-pending", icon: Clock, label: "Pendente" };
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const meta = getStatusMeta(status);
+  const Icon = meta.icon;
+
+  return (
+    <span className={`badge ${meta.className}`}>
+      <Icon size={12} />
+      {meta.label}
+    </span>
+  );
+}
+
+function ProductNameSummary({
+  name,
+  expanded,
+  onToggle,
+}: {
+  name: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="product-name-cell">
+      <button
+        type="button"
+        className="product-name-trigger"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        <span className={`product-name-text${expanded ? " is-expanded" : ""}`}>{name}</span>
+        <span className="product-name-tooltip">{name}</span>
+      </button>
+      <button type="button" className="product-name-toggle" onClick={onToggle}>
+        {expanded ? (
+          <>
+            Recolher <ChevronUp size={14} />
+          </>
+        ) : (
+          <>
+            Ver completo <ChevronDown size={14} />
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
+function ProductLinks({ product }: { product: Product }) {
+  return (
+    <div className="product-link-stack">
+      {product.min_price ? (
+        <>
+          {product.best_offer_url ? (
+            <a
+              href={product.best_offer_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="product-link-box"
+              title={`Acessar oferta econômica${product.best_marketplace ? ` no ${product.best_marketplace}` : ""}`}
+            >
+              Econômico <ExternalLink size={12} />
+            </a>
+          ) : (
+            <span className="product-link-secondary">{product.best_marketplace || "Sem link"}</span>
+          )}
+          {product.mid_price && product.mid_offer_url ? (
+            <a
+              href={product.mid_offer_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="product-link-secondary"
+              title="Acessar oferta intermediária"
+            >
+              Intermediário <ExternalLink size={12} />
+            </a>
+          ) : null}
+        </>
+      ) : (
+        <span className="product-link-secondary is-muted">---</span>
+      )}
+    </div>
+  );
+}
+
+function ProductRowActions({
+  product,
+  onApprove,
+  onDiscard,
+  onDelete,
+}: {
+  product: Product;
+  onApprove: () => void;
+  onDiscard: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="product-actions">
+      <button
+        type="button"
+        onClick={onApprove}
+        className="product-action-button product-action-approve"
+      >
+        <Check size={14} />
+        Aprovar
+      </button>
+      <button
+        type="button"
+        onClick={onDiscard}
+        className="product-action-button product-action-discard"
+      >
+        <X size={14} />
+        Descartar
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        className="product-action-button product-action-remove"
+        title={`Remover ${product.name}`}
+      >
+        <Trash2 size={14} />
+        Remover
+      </button>
+    </div>
+  );
+}
 
 export default function ProductsPage() {
-    return (
-        <Suspense fallback={<div className="skeleton" style={{ height: "100vh", width: "100%" }} />}>
-            <ProductsContent />
-        </Suspense>
-    );
+  return (
+    <Suspense fallback={<div className="skeleton" style={{ height: "100vh", width: "100%" }} />}>
+      <ProductsContent />
+    </Suspense>
+  );
 }
 
 function ProductsContent() {
-    const [projects, setProjects] = useState<any[]>([]);
-    const [selectedProject, setSelectedProject] = useState<string>("");
-    const [products, setProducts] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [searchTerm, setSearchTerm] = useState("");
-    const [filterStatus, setFilterStatus] = useState("ALL");
-    const [currentPage, setCurrentPage] = useState(1);
-    const ITEMS_PER_PAGE = 50;
-    const [globalMargin, setGlobalMargin] = useState("");
-    const [searching, setSearching] = useState(false);
-    const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
-    const [isUpdating, setIsUpdating] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProject, setSelectedProject] = useState("");
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterStatus, setFilterStatus] = useState("ALL");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [globalMargin, setGlobalMargin] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [expandedProductIds, setExpandedProductIds] = useState<string[]>([]);
+  const [marginDrafts, setMarginDrafts] = useState<Record<string, string>>({});
+  const [savingMarginId, setSavingMarginId] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
 
-    const searchParams = useSearchParams();
-    const urlProjectId = searchParams.get("projectId");
+  const searchParams = useSearchParams();
+  const urlProjectId = searchParams.get("projectId");
+  const deferredSearchTerm = useDeferredValue(searchTerm.trim().toLowerCase());
 
-    useEffect(() => {
-        api.projects
-            .list()
-            .then((data: any) => {
-                setProjects(data.projects);
-                // If projectId in URL, select it, otherwise default to first project
-                if (urlProjectId) {
-                    setSelectedProject(urlProjectId);
-                } else if (data.projects.length > 0) {
-                    setSelectedProject(data.projects[0].id);
-                }
-            })
-            .finally(() => setLoading(false));
-    }, [urlProjectId]);
+  useEffect(() => {
+    let active = true;
 
-    useEffect(() => {
-        if (selectedProject) {
-            setLoading(true);
-            api.products
-                .list(selectedProject)
-                .then((data: any) => setProducts(data))
-                .finally(() => setLoading(false));
+    api.projects
+      .list()
+      .then((data) => {
+        if (!active) {
+          return;
         }
-    }, [selectedProject]);
 
-    const updateStatus = async (id: string, status: string) => {
-        await api.products.updateStatus(id, status);
-        setProducts((prev) =>
-            prev.map((p) => (p.id === id ? { ...p, status } : p))
-        );
-    };
-
-    const updateMargin = async (id: string, margin: number) => {
-        await api.products.updateMargin(id, margin);
-        setProducts((prev) =>
-            prev.map((p) => (p.id === id ? { ...p, margin } : p))
-        );
-    };
-
-    const deleteProduct = async (id: string) => {
-        if (!confirm("Tem certeza que deseja remover este produto?")) return;
-        await api.products.delete(id);
-        setProducts((prev) => prev.filter((p) => p.id !== id));
-    };
-
-    const applyGlobalMargin = async () => {
-        if (!globalMargin || !selectedProject) return;
-        await api.products.bulkMargin(selectedProject, parseFloat(globalMargin));
-        setProducts((prev) =>
-            prev.map((p) => ({ ...p, margin: parseFloat(globalMargin) }))
-        );
-    };
-
-    const searchAllPrices = async () => {
-        if (!selectedProject) return;
-        setSearching(true);
-        try {
-            await api.offers.searchAll(selectedProject, true);
-            // Refresh products to show updated statuses/counts
-            const data: any = await api.products.list(selectedProject);
-            setProducts(data);
-        } finally {
-            setSearching(false);
+        setProjects(data.projects);
+        const nextProjectId = urlProjectId || data.projects[0]?.id || "";
+        setSelectedProject(nextProjectId);
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
         }
-    };
+      });
 
-    const filtered = products.filter((p) => {
-        const matchSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase());
-        const matchStatus = filterStatus === "ALL" || p.status === filterStatus;
-        return matchSearch && matchStatus;
+    return () => {
+      active = false;
+    };
+  }, [urlProjectId]);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      startTransition(() => {
+        setProducts([]);
+        setMarginDrafts({});
+      });
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+
+    api.products
+      .list(selectedProject)
+      .then((data) => {
+        if (!active) {
+          return;
+        }
+
+        startTransition(() => {
+          setProducts(data);
+          setMarginDrafts(buildMarginDrafts(data));
+          setSelectedProductIds([]);
+          setExpandedProductIds([]);
+        });
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedProject]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [deferredSearchTerm, filterStatus, selectedProject]);
+
+  const filteredProducts = useMemo(() => {
+    return products.filter((product) => {
+      const matchesSearch = product.name.toLowerCase().includes(deferredSearchTerm);
+      const matchesStatus = filterStatus === "ALL" || product.status === filterStatus;
+      return matchesSearch && matchesStatus;
     });
+  }, [products, deferredSearchTerm, filterStatus]);
 
-    const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
-    const paginatedProducts = filtered.slice(
-        (currentPage - 1) * ITEMS_PER_PAGE,
-        currentPage * ITEMS_PER_PAGE
-    );
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredProducts.length / ITEMS_PER_PAGE)),
+    [filteredProducts.length]
+  );
 
-    // Reset pagination when search or status filters change
-    useEffect(() => {
-        setCurrentPage(1);
-    }, [searchTerm, filterStatus, selectedProject]);
+  const paginatedProducts = useMemo(() => {
+    const safePage = Math.min(currentPage, totalPages);
+    const start = (safePage - 1) * ITEMS_PER_PAGE;
+    return filteredProducts.slice(start, start + ITEMS_PER_PAGE);
+  }, [currentPage, filteredProducts, totalPages]);
 
-    const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.checked) {
-            setSelectedProductIds(paginatedProducts.map(p => p.id));
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const summary = useMemo(() => {
+    return products.reduce(
+      (acc, product) => {
+        const normalized = product.status?.toUpperCase?.() || "PENDING";
+        if (normalized === "APPROVED") {
+          acc.approved += 1;
+        } else if (normalized === "DISCARDED" || normalized === "ERROR" || normalized === "ERROR_NOT_FOUND") {
+          acc.discarded += 1;
+        } else if (normalized === "SUCCESS") {
+          acc.success += 1;
         } else {
-            setSelectedProductIds([]);
+          acc.pending += 1;
         }
-    };
-
-    const handleSelect = (id: string) => {
-        setSelectedProductIds(prev => 
-            prev.includes(id) ? prev.filter(pId => pId !== id) : [...prev, id]
-        );
-    };
-
-    const bulkUpdateStatus = async (status: string) => {
-        if (selectedProductIds.length === 0) return;
-        const actionName = status === "APPROVED" ? "aprovar" : "descartar";
-        if (!confirm(`Tem certeza que deseja ${actionName} ${selectedProductIds.length} produtos?`)) return;
-        
-        setIsUpdating(true);
-        try {
-            await Promise.all(selectedProductIds.map(id => api.products.updateStatus(id, status)));
-            setProducts(prev => prev.map(p => selectedProductIds.includes(p.id) ? { ...p, status } : p));
-            setSelectedProductIds([]);
-        } finally {
-            setIsUpdating(false);
-        }
-    };
-
-    const bulkDelete = async () => {
-        if (selectedProductIds.length === 0) return;
-        if (!confirm(`Tem certeza que deseja remover ${selectedProductIds.length} produtos?`)) return;
-        
-        setIsUpdating(true);
-        try {
-            await Promise.all(selectedProductIds.map(id => api.products.delete(id)));
-            setProducts(prev => prev.filter(p => !selectedProductIds.includes(p.id)));
-            setSelectedProductIds([]);
-        } finally {
-            setIsUpdating(false);
-        }
-    };
-
-    const statusBadge = (status: string) => {
-        const map: Record<string, { cls: string; icon: any }> = {
-            PENDING: { cls: "badge-pending", icon: Clock },
-            APPROVED: { cls: "badge-approved", icon: Check },
-            DISCARDED: { cls: "badge-discarded", icon: X },
-        };
-        const s = map[status] || map.PENDING;
-        const Icon = s.icon;
-        return (
-            <span className={`badge ${s.cls}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <Icon size={12} />
-                {status === "PENDING" ? "Pendente" : status === "APPROVED" ? "Aprovado" : "Descartado"}
-            </span>
-        );
-    };
-
-    return (
-        <div>
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-                <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 4 }}>Produtos</h1>
-                <p style={{ color: "var(--text-secondary)", fontSize: 15, marginBottom: 24 }}>
-                    Gerencie os produtos extraídos dos seus PDFs
-                </p>
-            </motion.div>
-
-            {/* Controls */}
-            <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-                style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 12,
-                    marginBottom: 20,
-                    alignItems: "center",
-                }}
-            >
-                {/* Project selector */}
-                <select
-                    value={selectedProject}
-                    onChange={(e) => setSelectedProject(e.target.value)}
-                    className="input-field"
-                    style={{ width: 220, padding: "10px 14px" }}
-                >
-                    <option value="">Selecione o projeto</option>
-                    {projects.map((p) => (
-                        <option key={p.id} value={p.id}>
-                            {p.name}
-                        </option>
-                    ))}
-                </select>
-
-                {/* Search */}
-                <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
-                    <Search
-                        size={16}
-                        style={{
-                            position: "absolute",
-                            left: 12,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            color: "var(--text-muted)",
-                        }}
-                    />
-                    <input
-                        type="text"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        placeholder="Buscar produto..."
-                        className="input-field"
-                        style={{ paddingLeft: 36 }}
-                    />
-                </div>
-
-                {/* Status filter */}
-                <select
-                    value={filterStatus}
-                    onChange={(e) => setFilterStatus(e.target.value)}
-                    className="input-field"
-                    style={{ width: 150, padding: "10px 14px" }}
-                >
-                    <option value="ALL">Todos</option>
-                    <option value="PENDING">Pendentes</option>
-                    <option value="APPROVED">Aprovados</option>
-                    <option value="DISCARDED">Descartados</option>
-                </select>
-
-                <button
-                    onClick={searchAllPrices}
-                    disabled={searching}
-                    className={`btn-primary ${searching ? 'animate-pulse' : ''}`}
-                    style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 160, justifyContent: "center" }}
-                >
-                    {searching ? (
-                        <Loader2 size={18} className="animate-spin" />
-                    ) : (
-                        <ShoppingBag size={18} />
-                    )}
-                    {searching ? "Buscando..." : "Buscar Preços"}
-                </button>
-            </motion.div>
-
-            {/* Global margin */}
-            <div
-                style={{
-                    display: "flex",
-                    gap: 12,
-                    alignItems: "center",
-                    marginBottom: 20,
-                    padding: "12px 16px",
-                    background: "var(--bg-card)",
-                    borderRadius: 10,
-                    border: "1px solid var(--border)",
-                }}
-            >
-                <span style={{ fontSize: 13, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>Margem global (%):</span>
-                <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                    <input
-                        type="number"
-                        value={globalMargin}
-                        onChange={(e) => setGlobalMargin(e.target.value)}
-                        placeholder="Ex: 5"
-                        className="input-field"
-                        style={{ width: 80, paddingRight: 30 }}
-                    />
-                    <span style={{ position: "absolute", right: 10, color: "var(--text-muted)", fontSize: 13 }}>%</span>
-                </div>
-                <button onClick={applyGlobalMargin} className="btn-secondary" style={{ padding: "10px 16px" }}>
-                    Aplicar em Todos
-                </button>
-            </div>
-
-            {/* Bulk Actions */}
-            {selectedProductIds.length > 0 && (
-                <motion.div 
-                    initial={{ opacity: 0, height: 0 }} 
-                    animate={{ opacity: 1, height: "auto" }}
-                    style={{
-                        display: "flex",
-                        gap: 12,
-                        alignItems: "center",
-                        marginBottom: 20,
-                        padding: "12px 16px",
-                        background: "rgba(99, 102, 241, 0.05)",
-                        borderRadius: 10,
-                        border: "1px solid rgba(99, 102, 241, 0.2)",
-                    }}
-                >
-                    <span style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>
-                        {selectedProductIds.length} selecionado{selectedProductIds.length > 1 ? "s" : ""}
-                    </span>
-                    <div style={{ width: 1, height: 24, background: "rgba(99, 102, 241, 0.2)", margin: "0 8px" }} />
-                    <button 
-                        onClick={() => bulkUpdateStatus("APPROVED")} 
-                        disabled={isUpdating}
-                        className="btn-secondary" 
-                        style={{ padding: "8px 14px", display: "flex", gap: 6, alignItems: "center", borderColor: "rgba(34,197,94,0.3)", color: "#22c55e", fontSize: 13 }}
-                    >
-                        <Check size={14} /> Aprovar Selecionados
-                    </button>
-                    <button 
-                        onClick={() => bulkUpdateStatus("DISCARDED")} 
-                        disabled={isUpdating}
-                        className="btn-secondary" 
-                        style={{ padding: "8px 14px", display: "flex", gap: 6, alignItems: "center", borderColor: "rgba(239,68,68,0.3)", color: "#ef4444", fontSize: 13 }}
-                    >
-                        <X size={14} /> Descartar Selecionados
-                    </button>
-                    <button 
-                        onClick={bulkDelete} 
-                        disabled={isUpdating}
-                        className="btn-secondary" 
-                        style={{ padding: "8px 14px", display: "flex", gap: 6, alignItems: "center", borderColor: "rgba(239,68,68,0.3)", color: "#f87171", marginLeft: "auto", fontSize: 13 }}
-                    >
-                        <Trash2 size={14} /> Remover Selecionados
-                    </button>
-                </motion.div>
-            )}
-
-            {/* Table */}
-            <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.2 }}
-                className="glass-card"
-                style={{ overflow: "auto" }}
-            >
-                <table className="data-table">
-                    <thead>
-                        <tr>
-                            <th style={{ width: 40, textAlign: "center" }}>
-                                <input 
-                                    type="checkbox" 
-                                    checked={filtered.length > 0 && selectedProductIds.length === filtered.length}
-                                    onChange={handleSelectAll}
-                                    style={{ cursor: "pointer", width: 16, height: 16 }}
-                                />
-                            </th>
-                            <th>Lote</th>
-                            <th>Produto</th>
-                            <th>Unid.</th>
-                            <th>Qtd</th>
-                            <th>V. Unit. Edital</th>
-                            <th>Custo Unit.</th>
-                            <th>Acessar Link</th>
-                            <th>Custo Total</th>
-                            <th>Margem (%)</th>
-                            <th>Sugestão Venda (Unid.)</th>
-                            <th>Status</th>
-                            <th>Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {loading ? (
-                            Array.from({ length: 5 }).map((_, i) => (
-                                <tr key={i}>
-                                    {Array.from({ length: 13 }).map((_, j) => (
-                                        <td key={j}>
-                                            <div className="skeleton" style={{ height: 20, width: "80%" }} />
-                                        </td>
-                                    ))}
-                                </tr>
-                            ))
-                        ) : filtered.length === 0 ? (
-                            <tr>
-                                <td colSpan={13} style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>
-                                    <Package size={40} style={{ opacity: 0.3, marginBottom: 8 }} />
-                                    <div>Nenhum produto encontrado</div>
-                                </td>
-                            </tr>
-                        ) : (
-                            paginatedProducts.map((product) => (
-                                <tr key={product.id} style={{ background: selectedProductIds.includes(product.id) ? "rgba(99, 102, 241, 0.05)" : "transparent" }}>
-                                    <td style={{ textAlign: "center" }}>
-                                        <input 
-                                            type="checkbox" 
-                                            checked={selectedProductIds.includes(product.id)}
-                                            onChange={() => handleSelect(product.id)}
-                                            style={{ cursor: "pointer", width: 16, height: 16 }}
-                                        />
-                                    </td>
-                                    <td>
-                                        <span style={{ background: "rgba(255,255,255,0.05)", padding: "4px 8px", borderRadius: 4, fontSize: 13, border: "1px solid rgba(255,255,255,0.1)", whiteSpace: "nowrap" }}>
-                                            {product.numero_lote || "-"}
-                                        </span>
-                                    </td>
-                                    <td style={{ fontWeight: 500, maxWidth: 300 }}>{product.name}</td>
-                                    <td style={{ color: "var(--text-secondary)", fontSize: 13 }}>{product.unidade_medida || "un"}</td>
-                                    <td>{product.quantity}</td>
-                                    <td>
-                                        <div style={{ color: "var(--text-secondary)", fontSize: 13, whiteSpace: "nowrap" }}>
-                                            {product.valor_unitario_estimado ? `R$ ${product.valor_unitario_estimado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : "-"}
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <div style={{ color: "var(--text-primary)", fontWeight: 600 }}>
-                                            {product.min_price
-                                                ? `R$ ${product.min_price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
-                                                : (searching ? "Buscando..." : "Pendente")}
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
-                                            {/* Best Offer Link */}
-                                            {product.min_price ? (
-                                                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
-                                                    {product.best_offer_url ? (
-                                                        <a
-                                                            href={product.best_offer_url}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            style={{
-                                                                display: "inline-flex",
-                                                                alignItems: "center",
-                                                                justifyContent: "center",
-                                                                gap: 6,
-                                                                fontSize: 12,
-                                                                color: "white",
-                                                                background: "var(--accent)",
-                                                                border: "1px solid rgba(255, 255, 255, 0.1)",
-                                                                padding: "6px 12px",
-                                                                borderRadius: 8,
-                                                                textDecoration: "none",
-                                                                fontWeight: 600,
-                                                                transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
-                                                                boxShadow: "0 2px 8px var(--accent-glow)",
-                                                                whiteSpace: "nowrap",
-                                                                width: "100%"
-                                                            }}
-                                                            onMouseOver={(e) => {
-                                                                e.currentTarget.style.background = "var(--accent-hover)";
-                                                                e.currentTarget.style.transform = "translateY(-1px)";
-                                                            }}
-                                                            onMouseOut={(e) => {
-                                                                e.currentTarget.style.background = "var(--accent)";
-                                                                e.currentTarget.style.transform = "translateY(0)";
-                                                            }}
-                                                            title={`Acessar oferta econômica no ${product.best_marketplace}`}
-                                                        >
-                                                            Econômico
-                                                            <ExternalLink size={12} />
-                                                        </a>
-                                                    ) : (
-                                                        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                                                            {product.best_marketplace || "S/ Link"}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            ) : (
-                                                <span style={{ color: "var(--text-muted)" }}>---</span>
-                                            )}
-
-                                            {/* Mid Offer Link */}
-                                            {product.mid_price && (
-                                                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
-                                                    <a
-                                                        href={product.mid_offer_url}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        style={{
-                                                            display: "inline-flex",
-                                                            alignItems: "center",
-                                                            justifyContent: "center",
-                                                            gap: 6,
-                                                            fontSize: 12,
-                                                            color: "var(--text-primary)",
-                                                            background: "rgba(255, 255, 255, 0.05)",
-                                                            border: "1px solid var(--border)",
-                                                            padding: "6px 12px",
-                                                            borderRadius: 8,
-                                                            textDecoration: "none",
-                                                            fontWeight: 600,
-                                                            transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
-                                                            whiteSpace: "nowrap",
-                                                            width: "100%"
-                                                        }}
-                                                        onMouseOver={(e) => {
-                                                            e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
-                                                            e.currentTarget.style.transform = "translateY(-1px)";
-                                                        }}
-                                                        onMouseOut={(e) => {
-                                                            e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
-                                                            e.currentTarget.style.transform = "translateY(0)";
-                                                        }}
-                                                        title={`Acessar oferta intermediária (+ -)`}
-                                                    >
-                                                        Intermediário
-                                                        <ExternalLink size={12} />
-                                                    </a>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
-                                            {product.min_price ? `R$ ${(product.min_price * product.quantity).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : "---"}
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                                            <input
-                                                type="number"
-                                                value={product.margin}
-                                                onChange={(e) => updateMargin(product.id, parseFloat(e.target.value) || 0)}
-                                                className="input-field"
-                                                style={{ width: 70, padding: "6px 25px 6px 10px", fontSize: 13 }}
-                                            />
-                                            <span style={{ position: 'absolute', right: 8, color: 'var(--text-muted)', fontSize: 11 }}>%</span>
-                                        </div>
-                                    </td>
-                                    <td style={{ color: "var(--accent)", fontWeight: 700 }}>
-                                        {product.min_price
-                                            ? `R$ ${(product.min_price * (1 + product.margin / 100)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
-                                            : "---"
-                                        }
-                                    </td>
-                                    <td>{statusBadge(product.status)}</td>
-                                    <td>
-                                        <div style={{ display: "flex", gap: 6 }}>
-                                            <button
-                                                onClick={() => updateStatus(product.id, "APPROVED")}
-                                                style={{
-                                                    background: product.status === "APPROVED" ? "rgba(34,197,94,0.2)" : "rgba(34,197,94,0.08)",
-                                                    border: "1px solid rgba(34,197,94,0.3)",
-                                                    borderRadius: 8,
-                                                    padding: "6px 10px",
-                                                    color: "#22c55e",
-                                                    cursor: "pointer",
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    gap: 4,
-                                                    fontSize: 12,
-                                                }}
-                                            >
-                                                <Check size={14} /> Aprovar
-                                            </button>
-                                            <button
-                                                onClick={() => updateStatus(product.id, "DISCARDED")}
-                                                style={{
-                                                    background: product.status === "DISCARDED" ? "rgba(239,68,68,0.2)" : "rgba(239,68,68,0.08)",
-                                                    border: "1px solid rgba(239,68,68,0.3)",
-                                                    borderRadius: 8,
-                                                    padding: "6px 10px",
-                                                    color: "#ef4444",
-                                                    cursor: "pointer",
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    gap: 4,
-                                                    fontSize: 12,
-                                                }}
-                                            >
-                                                <X size={14} /> Descartar
-                                            </button>
-                                            <button
-                                                onClick={() => deleteProduct(product.id)}
-                                                style={{
-                                                    background: "rgba(239,68,68,0.05)",
-                                                    border: "1px solid rgba(239,68,68,0.2)",
-                                                    borderRadius: 8,
-                                                    padding: "6px 10px",
-                                                    color: "#f87171",
-                                                    cursor: "pointer",
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    gap: 4,
-                                                    fontSize: 12,
-                                                }}
-                                                title="Remover produto"
-                                            >
-                                                <Trash2 size={14} /> Remover
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))
-                        )}
-                    </tbody>
-                </table>
-
-                {/* Pagination Controls */}
-                {!loading && filtered.length > ITEMS_PER_PAGE && (
-                    <div style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "16px 20px",
-                        borderTop: "1px solid var(--border)",
-                        background: "rgba(0,0,0,0.2)"
-                    }}>
-                        <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                            Mostrando {(currentPage - 1) * ITEMS_PER_PAGE + 1} a {Math.min(currentPage * ITEMS_PER_PAGE, filtered.length)} de {filtered.length} itens
-                        </div>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <button
-                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                                disabled={currentPage === 1}
-                                className="btn-secondary"
-                                style={{ padding: "6px 12px", fontSize: 13, opacity: currentPage === 1 ? 0.5 : 1 }}
-                            >
-                                Anterior
-                            </button>
-                            <span style={{ fontSize: 14, fontWeight: 500, margin: "0 8px" }}>
-                                {currentPage} de {totalPages}
-                            </span>
-                            <button
-                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                                disabled={currentPage === totalPages}
-                                className="btn-secondary"
-                                style={{ padding: "6px 12px", fontSize: 13, opacity: currentPage === totalPages ? 0.5 : 1 }}
-                            >
-                                Próxima
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </motion.div>
-        </div>
+        return acc;
+      },
+      { pending: 0, approved: 0, discarded: 0, success: 0 }
     );
+  }, [products]);
+
+  const allCurrentPageSelected =
+    paginatedProducts.length > 0 &&
+    paginatedProducts.every((product) => selectedProductIds.includes(product.id));
+
+  async function refreshProducts(projectId: string) {
+    const data = await api.products.list(projectId);
+    startTransition(() => {
+      setProducts(data);
+      setMarginDrafts(buildMarginDrafts(data));
+      setSelectedProductIds([]);
+      setExpandedProductIds([]);
+    });
+  }
+
+  async function updateStatus(id: string, status: string) {
+    await api.products.updateStatus(id, status);
+    startTransition(() => {
+      setProducts((previous) => previous.map((product) => (product.id === id ? { ...product, status } : product)));
+    });
+  }
+
+  async function commitMargin(id: string) {
+    const product = products.find((item) => item.id === id);
+    if (!product) {
+      return;
+    }
+
+    const margin = normalizeMarginInput(marginDrafts[id] ?? String(product.margin ?? 0));
+    if (margin === product.margin) {
+      setMarginDrafts((previous) => ({ ...previous, [id]: String(margin) }));
+      return;
+    }
+
+    setSavingMarginId(id);
+    try {
+      await api.products.updateMargin(id, margin);
+      startTransition(() => {
+        setProducts((previous) => previous.map((item) => (item.id === id ? { ...item, margin } : item)));
+        setMarginDrafts((previous) => ({ ...previous, [id]: String(margin) }));
+      });
+    } finally {
+      setSavingMarginId("");
+    }
+  }
+
+  async function deleteProduct(id: string) {
+    if (!confirm("Tem certeza que deseja remover este produto?")) {
+      return;
+    }
+
+    await api.products.delete(id);
+    startTransition(() => {
+      setProducts((previous) => previous.filter((product) => product.id !== id));
+      setSelectedProductIds((previous) => previous.filter((productId) => productId !== id));
+      setExpandedProductIds((previous) => previous.filter((productId) => productId !== id));
+    });
+  }
+
+  async function applyGlobalMargin() {
+    if (!globalMargin || !selectedProject) {
+      return;
+    }
+
+    const margin = normalizeMarginInput(globalMargin);
+    await api.products.bulkMargin(selectedProject, margin);
+    startTransition(() => {
+      setProducts((previous) => previous.map((product) => ({ ...product, margin })));
+      setMarginDrafts((previous) => {
+        const next = { ...previous };
+        for (const product of products) {
+          next[product.id] = String(margin);
+        }
+        return next;
+      });
+    });
+  }
+
+  async function searchAllPrices() {
+    if (!selectedProject) {
+      return;
+    }
+
+    setSearching(true);
+    try {
+      await api.offers.searchAll(selectedProject, true, true);
+      await refreshProducts(selectedProject);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function handleSelectAll(checked: boolean) {
+    if (!checked) {
+      const currentPageIds = new Set(paginatedProducts.map((product) => product.id));
+      setSelectedProductIds((previous) => previous.filter((id) => !currentPageIds.has(id)));
+      return;
+    }
+
+    const currentPageIds = paginatedProducts.map((product) => product.id);
+    setSelectedProductIds((previous) => Array.from(new Set([...previous, ...currentPageIds])));
+  }
+
+  function handleSelect(id: string) {
+    setSelectedProductIds((previous) =>
+      previous.includes(id) ? previous.filter((productId) => productId !== id) : [...previous, id]
+    );
+  }
+
+  function toggleExpanded(id: string) {
+    setExpandedProductIds((previous) =>
+      previous.includes(id) ? previous.filter((productId) => productId !== id) : [...previous, id]
+    );
+  }
+
+  function handleMarginKeyDown(event: KeyboardEvent<HTMLInputElement>, id: string) {
+    if (event.key === "Enter") {
+      void commitMargin(id);
+    }
+
+    if (event.key === "Escape") {
+      const product = products.find((item) => item.id === id);
+      setMarginDrafts((previous) => ({ ...previous, [id]: String(product?.margin ?? 0) }));
+    }
+  }
+
+  async function bulkUpdateStatus(status: string) {
+    if (!selectedProductIds.length) {
+      return;
+    }
+
+    const actionLabel = status === "APPROVED" ? "aprovar" : "descartar";
+    if (!confirm(`Tem certeza que deseja ${actionLabel} ${selectedProductIds.length} itens?`)) {
+      return;
+    }
+
+    setIsUpdating(true);
+    try {
+      await Promise.all(selectedProductIds.map((id) => api.products.updateStatus(id, status)));
+      startTransition(() => {
+        setProducts((previous) =>
+          previous.map((product) =>
+            selectedProductIds.includes(product.id) ? { ...product, status } : product
+          )
+        );
+        setSelectedProductIds([]);
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  }
+
+  async function bulkDelete() {
+    if (!selectedProductIds.length) {
+      return;
+    }
+
+    if (!confirm(`Tem certeza que deseja remover ${selectedProductIds.length} itens?`)) {
+      return;
+    }
+
+    setIsUpdating(true);
+    try {
+      await Promise.all(selectedProductIds.map((id) => api.products.delete(id)));
+      const removedIds = new Set(selectedProductIds);
+      startTransition(() => {
+        setProducts((previous) => previous.filter((product) => !removedIds.has(product.id)));
+        setSelectedProductIds([]);
+        setExpandedProductIds((previous) => previous.filter((id) => !removedIds.has(id)));
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  }
+
+  return (
+    <div>
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
+        <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 4 }}>Produtos</h1>
+        <p style={{ color: "var(--text-secondary)", fontSize: 15, marginBottom: 24 }}>
+          Itens pesquisados com leitura mais limpa, ações rápidas e navegação otimizada para desktop, tablet e celular.
+        </p>
+      </motion.div>
+
+      <div className="products-toolbar">
+        <select
+          value={selectedProject}
+          onChange={(event) => setSelectedProject(event.target.value)}
+          className="input-field"
+        >
+          <option value="">Selecione o projeto</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+
+        <label className="products-search">
+          <Search size={16} />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Buscar item por nome"
+            className="input-field"
+          />
+        </label>
+
+        <select
+          value={filterStatus}
+          onChange={(event) => setFilterStatus(event.target.value)}
+          className="input-field"
+        >
+          <option value="ALL">Todos os status</option>
+          <option value="PENDING">Pendentes</option>
+          <option value="SUCCESS">Encontrados</option>
+          <option value="ERROR_NOT_FOUND">Não encontrados</option>
+          <option value="APPROVED">Aprovados</option>
+          <option value="DISCARDED">Descartados</option>
+        </select>
+
+        <button
+          type="button"
+          onClick={searchAllPrices}
+          disabled={searching || !selectedProject}
+          className={`btn-primary${searching ? " animate-pulse" : ""}`}
+        >
+          {searching ? <Loader2 size={18} className="animate-spin" /> : <ShoppingBag size={18} />}
+          {searching ? "Buscando..." : "Buscar preços"}
+        </button>
+      </div>
+
+      <div className="products-summary-bar">
+        <span className="product-tag-pill">Total: {products.length}</span>
+        <span className="product-tag-pill">Pendentes: {summary.pending}</span>
+        <span className="product-tag-pill">Encontrados: {summary.success}</span>
+        <span className="product-tag-pill">Sem match/descartados: {summary.discarded}</span>
+        <span className="product-tag-pill">
+          Página {Math.min(currentPage, totalPages)} de {totalPages}
+        </span>
+      </div>
+
+      <div className="products-bulk-bar">
+        <div className="product-margin-field">
+          <span>Margem global</span>
+          <div className="product-margin-input-wrap">
+            <input
+              type="number"
+              value={globalMargin}
+              onChange={(event) => setGlobalMargin(event.target.value)}
+              placeholder="5"
+              className="input-field"
+            />
+            <span className="product-margin-symbol">%</span>
+          </div>
+          <button type="button" className="btn-secondary" onClick={applyGlobalMargin}>
+            Aplicar em todos
+          </button>
+        </div>
+
+        {selectedProductIds.length > 0 ? (
+          <div className="product-tag-list">
+            <span className="product-tag-pill">{selectedProductIds.length} selecionado(s)</span>
+            <button type="button" className="product-action-button product-action-approve" onClick={() => bulkUpdateStatus("APPROVED")} disabled={isUpdating}>
+              <Check size={14} />
+              Aprovar
+            </button>
+            <button type="button" className="product-action-button product-action-discard" onClick={() => bulkUpdateStatus("DISCARDED")} disabled={isUpdating}>
+              <X size={14} />
+              Descartar
+            </button>
+            <button type="button" className="product-action-button product-action-remove" onClick={bulkDelete} disabled={isUpdating}>
+              <Trash2 size={14} />
+              Remover
+            </button>
+          </div>
+        ) : (
+          <span className="helper-text">As margens agora salvam no blur ou Enter, evitando lentidão a cada tecla.</span>
+        )}
+      </div>
+
+      <div className="glass-card products-table-shell">
+        <div className="products-desktop-table">
+          <table className="data-table products-data-table">
+            <thead>
+              <tr>
+                <th style={{ width: 44, textAlign: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={allCurrentPageSelected}
+                    onChange={(event) => handleSelectAll(event.target.checked)}
+                  />
+                </th>
+                <th>Lote</th>
+                <th>Produto</th>
+                <th>Unid.</th>
+                <th>Qtd</th>
+                <th>V. edital</th>
+                <th>Custo unit.</th>
+                <th>Links</th>
+                <th>Total</th>
+                <th>Margem</th>
+                <th>Venda sugerida</th>
+                <th>Status</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                Array.from({ length: 6 }).map((_, rowIndex) => (
+                  <tr key={`loading-${rowIndex}`}>
+                    {Array.from({ length: 13 }).map((_, cellIndex) => (
+                      <td key={`loading-cell-${cellIndex}`}>
+                        <div className="skeleton" style={{ height: 18, width: cellIndex === 2 ? "96%" : "72%" }} />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : paginatedProducts.length === 0 ? (
+                <tr>
+                  <td colSpan={13} style={{ textAlign: "center", padding: 44, color: "var(--text-muted)" }}>
+                    <Package size={42} style={{ opacity: 0.28, marginBottom: 12 }} />
+                    <div>Nenhum item encontrado com os filtros atuais.</div>
+                  </td>
+                </tr>
+              ) : (
+                paginatedProducts.map((product) => {
+                  const expanded = expandedProductIds.includes(product.id);
+                  const salePrice = product.min_price ? product.min_price * (1 + product.margin / 100) : null;
+                  const totalCost = product.min_price ? product.min_price * product.quantity : null;
+
+                  return (
+                    <tr key={product.id}>
+                      <td style={{ textAlign: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedProductIds.includes(product.id)}
+                          onChange={() => handleSelect(product.id)}
+                        />
+                      </td>
+                      <td>
+                        <span className="products-lot-pill">{product.numero_lote || "-"}</span>
+                      </td>
+                      <td style={{ minWidth: 290, maxWidth: 360 }}>
+                        <ProductNameSummary
+                          name={product.name}
+                          expanded={expanded}
+                          onToggle={() => toggleExpanded(product.id)}
+                        />
+                      </td>
+                      <td>{product.unidade_medida || "un"}</td>
+                      <td>{product.quantity}</td>
+                      <td>{formatCurrency(product.valor_unitario_estimado)}</td>
+                      <td style={{ fontWeight: 700 }}>{product.min_price ? formatCurrency(product.min_price) : "Pendente"}</td>
+                      <td>
+                        <ProductLinks product={product} />
+                      </td>
+                      <td>{formatCurrency(totalCost)}</td>
+                      <td>
+                        <div className="product-margin-input-wrap">
+                          <input
+                            type="number"
+                            value={marginDrafts[product.id] ?? String(product.margin ?? 0)}
+                            onChange={(event) =>
+                              setMarginDrafts((previous) => ({ ...previous, [product.id]: event.target.value }))
+                            }
+                            onBlur={() => void commitMargin(product.id)}
+                            onKeyDown={(event) => handleMarginKeyDown(event, product.id)}
+                            className="input-field"
+                          />
+                          <span className="product-margin-symbol">%</span>
+                          {savingMarginId === product.id ? (
+                            <Loader2 size={14} className="product-margin-loading animate-spin" />
+                          ) : null}
+                        </div>
+                      </td>
+                      <td style={{ color: "var(--accent)", fontWeight: 700 }}>{formatCurrency(salePrice)}</td>
+                      <td>
+                        <StatusBadge status={product.status} />
+                      </td>
+                      <td>
+                        <ProductRowActions
+                          product={product}
+                          onApprove={() => void updateStatus(product.id, "APPROVED")}
+                          onDiscard={() => void updateStatus(product.id, "DISCARDED")}
+                          onDelete={() => void deleteProduct(product.id)}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="products-mobile-list">
+          {loading ? (
+            Array.from({ length: 4 }).map((_, index) => (
+              <div key={`mobile-loading-${index}`} className="product-mobile-card">
+                <div className="skeleton" style={{ height: 148 }} />
+              </div>
+            ))
+          ) : paginatedProducts.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)" }}>
+              Nenhum item encontrado com os filtros atuais.
+            </div>
+          ) : (
+            paginatedProducts.map((product) => {
+              const expanded = expandedProductIds.includes(product.id);
+              const salePrice = product.min_price ? product.min_price * (1 + product.margin / 100) : null;
+              const totalCost = product.min_price ? product.min_price * product.quantity : null;
+
+              return (
+                <article key={product.id} className="product-mobile-card">
+                  <div className="product-mobile-card-top">
+                    <label className="product-mobile-check">
+                      <input
+                        type="checkbox"
+                        checked={selectedProductIds.includes(product.id)}
+                        onChange={() => handleSelect(product.id)}
+                      />
+                      <span>Selecionar</span>
+                    </label>
+                    <div className="product-tag-list">
+                      <span className="products-lot-pill">{product.numero_lote || "-"}</span>
+                      <StatusBadge status={product.status} />
+                    </div>
+                  </div>
+
+                  <ProductNameSummary
+                    name={product.name}
+                    expanded={expanded}
+                    onToggle={() => toggleExpanded(product.id)}
+                  />
+
+                  <div className="product-mobile-meta-grid">
+                    <div className="product-mobile-meta-item">
+                      <span>Unidade</span>
+                      <strong>{product.unidade_medida || "un"}</strong>
+                    </div>
+                    <div className="product-mobile-meta-item">
+                      <span>Quantidade</span>
+                      <strong>{product.quantity}</strong>
+                    </div>
+                    <div className="product-mobile-meta-item">
+                      <span>Valor edital</span>
+                      <strong>{formatCurrency(product.valor_unitario_estimado)}</strong>
+                    </div>
+                    <div className="product-mobile-meta-item">
+                      <span>Custo unitário</span>
+                      <strong>{product.min_price ? formatCurrency(product.min_price) : "Pendente"}</strong>
+                    </div>
+                    <div className="product-mobile-meta-item">
+                      <span>Total</span>
+                      <strong>{formatCurrency(totalCost)}</strong>
+                    </div>
+                    <div className="product-mobile-meta-item">
+                      <span>Venda sugerida</span>
+                      <strong>{formatCurrency(salePrice)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="product-margin-field">
+                    <span>Margem do item</span>
+                    <div className="product-margin-input-wrap">
+                      <input
+                        type="number"
+                        value={marginDrafts[product.id] ?? String(product.margin ?? 0)}
+                        onChange={(event) =>
+                          setMarginDrafts((previous) => ({ ...previous, [product.id]: event.target.value }))
+                        }
+                        onBlur={() => void commitMargin(product.id)}
+                        onKeyDown={(event) => handleMarginKeyDown(event, product.id)}
+                        className="input-field"
+                      />
+                      <span className="product-margin-symbol">%</span>
+                      {savingMarginId === product.id ? (
+                        <Loader2 size={14} className="product-margin-loading animate-spin" />
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <ProductLinks product={product} />
+
+                  <div className="product-mobile-footer">
+                    <ProductRowActions
+                      product={product}
+                      onApprove={() => void updateStatus(product.id, "APPROVED")}
+                      onDiscard={() => void updateStatus(product.id, "DISCARDED")}
+                      onDelete={() => void deleteProduct(product.id)}
+                    />
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+
+        {!loading && filteredProducts.length > ITEMS_PER_PAGE ? (
+          <div className="products-pagination">
+            <span>
+              Mostrando {(Math.min(currentPage, totalPages) - 1) * ITEMS_PER_PAGE + 1} a{" "}
+              {Math.min(Math.min(currentPage, totalPages) * ITEMS_PER_PAGE, filteredProducts.length)} de{" "}
+              {filteredProducts.length} itens
+            </span>
+            <div className="product-tag-list">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setCurrentPage((previous) => Math.max(1, previous - 1))}
+                disabled={currentPage === 1}
+              >
+                Anterior
+              </button>
+              <span className="product-tag-pill">
+                {Math.min(currentPage, totalPages)} / {totalPages}
+              </span>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setCurrentPage((previous) => Math.min(totalPages, previous + 1))}
+                disabled={currentPage >= totalPages}
+              >
+                Próxima
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }

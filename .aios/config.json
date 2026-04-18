@@ -1,0 +1,34 @@
+{
+  "name": "sistema-de-preco",
+  "version": "1.0.0",
+  "description": "Preço Inteligente - Sistema de Cotação com ML",
+  "mode": "god",
+  "active_squad": "price-intelligence-squad",
+  "agents": {
+    "god-model": {
+      "active": true,
+      "role": "orchestrator",
+      "level": "master"
+    },
+    "dev": {
+      "active": true,
+      "role": "developer"
+    },
+    "qa": {
+      "active": true,
+      "role": "quality-assurance"
+    },
+    "architect": {
+      "active": true,
+      "role": "system-architect"
+    },
+    "analyst": {
+      "active": true,
+      "role": "data-analyst"
+    }
+  },
+  "workflows": [
+    "brownfield-fullstack-workflow",
+    "qa-loop-workflow"
+  ]
+}

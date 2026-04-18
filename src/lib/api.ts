@@ -1,145 +1,221 @@
-const getApiBase = () => {
-    // Na Vercel/Netlify, se não houver URL definida, usamos caminhos relativos
-    if (typeof window !== "undefined") {
-        if (window.location.hostname.includes("vercel.app") || window.location.hostname.includes("netlify.app")) {
-            return ""; 
-        }
-    }
-    
-    if (process.env.NEXT_PUBLIC_API_URL) {
-        return process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, "");
-    }
-    
-    return ""; // Default to relative path to avoid breaking the build
-};
+import type {
+  AuthResponse,
+  DashboardStats,
+  MarketStats,
+  Offer,
+  Product,
+  Project,
+  ProjectListResponse,
+  Quotation,
+  User,
+} from "./types";
 
-const API_BASE = getApiBase();
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const AUTH_EXPIRED_EVENT = "auth:expired";
 
-if (typeof window !== "undefined") {
-    console.log("Using API Base URL:", API_BASE || "(relative)");
+function clearBrowserSession() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+}
+
+function redirectToLoginOnUnauthorized() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const currentPath = window.location.pathname;
+  if (currentPath.startsWith("/login") || currentPath.startsWith("/register")) {
+    return;
+  }
+
+  const nextUrl = `/login?reason=session-expired&next=${encodeURIComponent(`${currentPath}${window.location.search}`)}`;
+  window.location.replace(nextUrl);
 }
 
 function getToken(): string | null {
-    if (typeof window === "undefined") return null;
+  if (typeof window !== "undefined") {
     return localStorage.getItem("token");
+  }
+
+  return null;
 }
 
-async function request<T>(
-    endpoint: string,
-    options: RequestInit = {}
-): Promise<T> {
-    const token = getToken();
-    const headers: Record<string, string> = {
-        ...(options.headers as Record<string, string>),
-    };
+function buildHeaders(options?: RequestInit): Headers {
+  const headers = new Headers(options?.headers);
+  const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData;
 
-    if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
+  if (!isFormData && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const token = getToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  return headers;
+}
+
+function normalizeErrorMessage(payload: unknown, status: number, statusText: string) {
+  if (typeof payload === "string" && payload.trim()) {
+    try {
+      const parsed = JSON.parse(payload);
+      if (parsed?.detail) {
+        return parsed.detail as string;
+      }
+    } catch {
+      return payload;
     }
+  }
 
-    // Don't set Content-Type for FormData
-    if (!(options.body instanceof FormData)) {
-        headers["Content-Type"] = "application/json";
+  if (payload && typeof payload === "object") {
+    const record = payload as { detail?: string; message?: string };
+    if (record.detail) {
+      return record.detail;
     }
+    if (record.message) {
+      return record.message;
+    }
+  }
 
-    const res = await fetch(`${API_BASE}${endpoint}`, {
-        ...options,
-        headers,
+  return `Erro ${status}: ${statusText}`;
+}
+
+async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_URL}${endpoint}`;
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      cache: "no-store",
+      headers: buildHeaders(options),
     });
 
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ detail: "Erro desconhecido" }));
-        throw new Error(error.detail || `HTTP ${res.status}`);
+    const contentType = response.headers.get("content-type") || "";
+    const isJson = contentType.includes("application/json");
+    const payload = isJson ? await response.json().catch(() => null) : await response.text();
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearBrowserSession();
+        redirectToLoginOnUnauthorized();
+        throw new Error("Sua sessão expirou. Faça login novamente.");
+      }
+
+      throw new Error(normalizeErrorMessage(payload, response.status, response.statusText));
     }
 
-    // Handle blob responses (Excel export)
-    const contentType = res.headers.get("content-type");
-    if (contentType?.includes("spreadsheet") || contentType?.includes("octet-stream")) {
-        return res.blob() as Promise<T>;
+    return payload as T;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "";
+    if (error instanceof TypeError || message.toLowerCase().includes("fetch")) {
+      throw new Error(`Não foi possível conectar ao servidor. Verifique se o backend está rodando em ${API_URL}`);
     }
 
-    return res.json();
+    throw error;
+  }
 }
 
-// Auth
 export const api = {
-    auth: {
-        register: (data: { email: string; name: string; password: string }) =>
-            request("/api/auth/register", { method: "POST", body: JSON.stringify(data) }),
-        login: (data: { email: string; password: string }) =>
-            request("/api/auth/login", { method: "POST", body: JSON.stringify(data) }),
-        me: () => request("/api/auth/me"),
-    },
+  auth: {
+    login: (data: { email: string; password: string }) =>
+      fetchApi<AuthResponse>("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    register: (data: { email: string; name: string; password: string }) =>
+      fetchApi<AuthResponse>("/api/auth/register", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    me: () => fetchApi<User>("/api/auth/me"),
+  },
 
-    projects: {
-        list: () => request<{ projects: any[]; total: number }>("/api/projects"),
-        get: (id: string) => request(`/api/projects/${id}`),
-        upload: (file: File, name: string, pagesConfig?: string) => {
-            const formData = new FormData();
-            formData.append("file", file);
-            formData.append("name", name);
-            if (pagesConfig) {
-                formData.append("pages_config", pagesConfig);
-            }
-            return request("/api/projects/upload", { method: "POST", body: formData });
-        },
-        uploadManual: (projectName: string, productName: string, quantity: number) => {
-            const formData = new FormData();
-            formData.append("name", projectName);
-            formData.append("product_name", productName);
-            formData.append("quantity", quantity.toString());
-            return request("/api/projects/manual", { method: "POST", body: formData });
-        },
-        delete: (id: string) => request(`/api/projects/${id}`, { method: "DELETE" }),
-    },
+  dashboard: {
+    stats: () => fetchApi<DashboardStats>("/api/dashboard/stats"),
+  },
 
-    products: {
-        list: (projectId: string) => request<any[]>(`/api/products/project/${projectId}`),
-        updateStatus: (id: string, status: string) =>
-            request(`/api/products/${id}/status`, {
-                method: "PATCH",
-                body: JSON.stringify({ status }),
-            }),
-        updateMargin: (id: string, margin: number) =>
-            request(`/api/products/${id}/margin`, {
-                method: "PATCH",
-                body: JSON.stringify({ margin }),
-            }),
-        bulkMargin: (projectId: string, margin: number) =>
-            request(`/api/products/project/${projectId}/bulk-margin`, {
-                method: "POST",
-                body: JSON.stringify({ margin }),
-            }),
-        delete: (id: string) => request(`/api/products/${id}`, { method: "DELETE" }),
-    },
+  projects: {
+    list: () => fetchApi<ProjectListResponse>("/api/projects"),
+    get: (projectId: string) => fetchApi<Project>(`/api/projects/${projectId}`),
+    upload: (file: File, name: string, pagesConfig?: string) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("name", name);
 
-    offers: {
-        search: (productId: string) =>
-            request<any[]>(`/api/offers/search/${productId}`, { method: "POST" }),
-        get: (productId: string) => request<any[]>(`/api/offers/${productId}`),
-        stats: (productId: string) => request(`/api/offers/${productId}/stats`),
-        another: (productId: string) =>
-            request(`/api/offers/${productId}/another`, { method: "POST" }),
-        searchAll: (projectId: string, force: boolean = false) =>
-            request(`/api/offers/search-all/${projectId}${force ? '?force=true' : ''}`, { method: "POST" }),
-    },
+      if (pagesConfig?.trim()) {
+        formData.append("pages_config", pagesConfig.trim());
+      }
 
-    quotations: {
-        generate: (projectId: string) =>
-            request(`/api/quotations/generate/${projectId}`, { method: "POST" }),
-        get: (projectId: string) => request(`/api/quotations/${projectId}`),
-        export: async (projectId: string) => {
-            const blob = await request<Blob>(`/api/quotations/export/${projectId}`);
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `orcamento.xlsx`;
-            a.click();
-            window.URL.revokeObjectURL(url);
-        },
+      return fetchApi<Project>("/api/projects/upload", {
+        method: "POST",
+        body: formData,
+      });
     },
+    uploadManual: (name: string, description: string, quantity: number) =>
+      fetchApi<Project>("/api/projects/manual-json", {
+        method: "POST",
+        body: JSON.stringify({ name, product_name: description, quantity }),
+      }),
+    delete: (projectId: string) =>
+      fetchApi<{ detail: string }>(`/api/projects/${projectId}`, {
+        method: "DELETE",
+      }),
+  },
 
-    dashboard: {
-        stats: () => request("/api/dashboard/stats"),
-    },
+  products: {
+    list: (projectId: string) => fetchApi<Product[]>(`/api/products/project/${projectId}`),
+    updateStatus: (id: string, status: string) =>
+      fetchApi<Product>(`/api/products/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ status }),
+      }),
+    updateMargin: (id: string, margin: number) =>
+      fetchApi<Product>(`/api/products/${id}/margin`, {
+        method: "PATCH",
+        body: JSON.stringify({ margin }),
+      }),
+    bulkMargin: (projectId: string, margin: number, productIds?: string[]) =>
+      fetchApi<{ detail: string }>(`/api/products/project/${projectId}/bulk-margin`, {
+        method: "POST",
+        body: JSON.stringify({ margin, product_ids: productIds }),
+      }),
+    delete: (id: string) =>
+      fetchApi<{ detail: string }>(`/api/products/${id}`, {
+        method: "DELETE",
+      }),
+  },
+
+  offers: {
+    search: (productId: string) =>
+      fetchApi<{ offers: Offer[]; menor_preco?: number; produto?: string }>(
+        `/api/offers/search?product_id=${productId}`
+      ),
+    searchAll: (projectId: string, bestSellers = false, force = false) =>
+      fetchApi<{ detail: string; total_offers?: number; products_searched?: number }>(
+        `/api/offers/search-all/${projectId}?best_sellers=${bestSellers}&force=${force}`,
+        {
+          method: "POST",
+        }
+      ),
+    get: (productId: string) => fetchApi<Offer[]>(`/api/offers/${productId}`),
+    stats: (productId: string) => fetchApi<MarketStats>(`/api/offers/${productId}/stats`),
+    another: (productId: string) =>
+      fetchApi<Offer>(`/api/offers/${productId}/another`, {
+        method: "POST",
+      }),
+  },
+
+  quotations: {
+    get: (projectId: string) => fetchApi<Quotation>(`/api/quotations/${projectId}`),
+    generate: (projectId: string) =>
+      fetchApi<Quotation>(`/api/quotations/generate/${projectId}`, {
+        method: "POST",
+      }),
+  },
 };

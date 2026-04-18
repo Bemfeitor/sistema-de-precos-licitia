@@ -1,269 +1,163 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth } from "@/lib/auth";
-import { motion } from "framer-motion";
-import { Sparkles, Eye, EyeOff, ArrowRight, User } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
+import { ArrowRight, Eye, EyeOff, Sparkles } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 
 export default function RegisterPage() {
+    const router = useRouter();
+    const { register } = useAuth();
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
-    const { register } = useAuth();
-    const router = useRouter();
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
         setError("");
+
         if (password.length < 6) {
-            setError("A senha deve ter pelo menos 6 caracteres");
+            setError("A senha deve ter pelo menos 6 caracteres.");
             return;
         }
+
         setLoading(true);
         try {
             await register(email, name, password);
             router.push("/dashboard");
-        } catch (err: any) {
-            setError(err.message || "Erro ao criar conta");
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : "Erro ao criar conta");
         } finally {
             setLoading(false);
         }
     };
 
     return (
-        <div
-            style={{
-                minHeight: "100vh",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                background:
-                    "radial-gradient(ellipse at 50% 0%, rgba(139,92,246,0.12) 0%, var(--bg-primary) 60%)",
-                padding: "20px",
-            }}
-        >
-            <div
-                style={{
-                    position: "absolute",
-                    top: "20%",
-                    right: "20%",
-                    width: 300,
-                    height: 300,
-                    borderRadius: "50%",
-                    background: "rgba(168,85,247,0.03)",
-                    filter: "blur(80px)",
-                    pointerEvents: "none",
-                }}
-            />
-
+        <div className="auth-shell">
             <motion.div
-                initial={{ opacity: 0, y: 30 }}
+                initial={{ opacity: 0, y: 24 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.6, ease: "easeOut" }}
-                style={{ width: "100%", maxWidth: 440, position: "relative", zIndex: 1 }}
+                className="glass-card"
+                style={{ width: "min(100%, 1080px)", overflow: "hidden" }}
             >
-                <div style={{ textAlign: "center", marginBottom: 40 }}>
-                    <motion.div
-                        initial={{ scale: 0.8 }}
-                        animate={{ scale: 1 }}
-                        transition={{ delay: 0.2, type: "spring", stiffness: 150 }}
-                        style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            width: 56,
-                            height: 56,
-                            borderRadius: 16,
-                            background: "var(--gradient-primary)",
-                            marginBottom: 16,
-                            boxShadow: "0 0 30px var(--accent-glow)",
-                        }}
-                    >
-                        <Sparkles size={28} color="white" />
-                    </motion.div>
-                    <h1
-                        style={{ fontSize: 28, fontWeight: 800, marginBottom: 4 }}
-                        className="gradient-text"
-                    >
-                        Criar Conta
-                    </h1>
-                    <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>
-                        Comece a usar o Preço Inteligente gratuitamente
-                    </p>
-                </div>
-
                 <div
-                    className="glass-card"
-                    style={{ padding: 32, position: "relative", overflow: "hidden" }}
+                    style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))",
+                    }}
                 >
-                    <div
+                    <section
                         style={{
-                            position: "absolute",
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            height: 2,
-                            background: "linear-gradient(90deg, #8b5cf6, #6366f1, #a855f7)",
+                            padding: "clamp(1.5rem, 5vw, 3rem)",
+                            background: "linear-gradient(160deg, rgba(8, 33, 51, 0.96), rgba(7, 17, 31, 0.92))",
+                            display: "grid",
+                            gap: 18,
+                            alignContent: "space-between",
                         }}
-                    />
+                    >
+                        <span className="section-eyebrow">
+                            <Sparkles size={14} />
+                            Novo workspace
+                        </span>
 
-                    <form onSubmit={handleSubmit}>
-                        <div style={{ marginBottom: 20 }}>
-                            <label
-                                style={{
-                                    display: "block",
-                                    marginBottom: 8,
-                                    fontSize: 13,
-                                    fontWeight: 500,
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                Nome completo
-                            </label>
-                            <input
-                                type="text"
-                                value={name}
-                                onChange={(e) => setName(e.target.value)}
-                                placeholder="Seu nome"
-                                className="input-field"
-                                required
-                            />
+                        <div>
+                            <h1 className="page-title">Crie sua conta e comece a estruturar a operação</h1>
+                            <p className="page-subtitle" style={{ marginTop: 12 }}>
+                                Em poucos minutos você sobe um PDF, separa as páginas certas e transforma uma lista bruta em orçamento acionável.
+                            </p>
+                        </div>
+                    </section>
+
+                    <section style={{ padding: "clamp(1.5rem, 5vw, 3rem)", display: "grid", gap: 20 }}>
+                        <div>
+                            <div className="gradient-text" style={{ fontSize: 28, fontWeight: 700 }}>
+                                Criar conta
+                            </div>
+                            <p style={{ color: "var(--text-secondary)", marginTop: 8 }}>
+                                Configure seu acesso e entre no fluxo principal do sistema.
+                            </p>
                         </div>
 
-                        <div style={{ marginBottom: 20 }}>
-                            <label
-                                style={{
-                                    display: "block",
-                                    marginBottom: 8,
-                                    fontSize: 13,
-                                    fontWeight: 500,
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                Email
-                            </label>
-                            <input
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                placeholder="seu@email.com"
-                                className="input-field"
-                                required
-                            />
-                        </div>
-
-                        <div style={{ marginBottom: 24 }}>
-                            <label
-                                style={{
-                                    display: "block",
-                                    marginBottom: 8,
-                                    fontSize: 13,
-                                    fontWeight: 500,
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                Senha
-                            </label>
-                            <div style={{ position: "relative" }}>
+                        <form onSubmit={handleSubmit} style={{ display: "grid", gap: 16 }}>
+                            <div style={{ display: "grid", gap: 8 }}>
+                                <label style={{ fontWeight: 600 }}>Nome completo</label>
                                 <input
-                                    type={showPassword ? "text" : "password"}
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    placeholder="Mínimo 6 caracteres"
+                                    type="text"
+                                    value={name}
+                                    onChange={(event) => setName(event.target.value)}
                                     className="input-field"
-                                    style={{ paddingRight: 44 }}
+                                    placeholder="Seu nome"
                                     required
                                 />
-                                <button
-                                    type="button"
-                                    onClick={() => setShowPassword(!showPassword)}
-                                    style={{
-                                        position: "absolute",
-                                        right: 12,
-                                        top: "50%",
-                                        transform: "translateY(-50%)",
-                                        background: "none",
-                                        border: "none",
-                                        color: "var(--text-muted)",
-                                        cursor: "pointer",
-                                        padding: 4,
-                                    }}
-                                >
-                                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                                </button>
                             </div>
-                        </div>
 
-                        {error && (
-                            <motion.div
-                                initial={{ opacity: 0, y: -10 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                style={{
-                                    padding: "10px 14px",
-                                    background: "rgba(239,68,68,0.1)",
-                                    border: "1px solid rgba(239,68,68,0.3)",
-                                    borderRadius: 8,
-                                    color: "var(--danger)",
-                                    fontSize: 13,
-                                    marginBottom: 16,
-                                }}
-                            >
-                                {error}
-                            </motion.div>
-                        )}
-
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="btn-primary"
-                            style={{
-                                width: "100%",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                gap: 8,
-                                fontSize: 15,
-                                padding: "14px 24px",
-                            }}
-                        >
-                            {loading ? (
-                                <div
-                                    style={{
-                                        width: 20,
-                                        height: 20,
-                                        border: "2px solid rgba(255,255,255,0.3)",
-                                        borderTopColor: "white",
-                                        borderRadius: "50%",
-                                        animation: "spin 0.6s linear infinite",
-                                    }}
+                            <div style={{ display: "grid", gap: 8 }}>
+                                <label style={{ fontWeight: 600 }}>Email</label>
+                                <input
+                                    type="email"
+                                    value={email}
+                                    onChange={(event) => setEmail(event.target.value)}
+                                    className="input-field"
+                                    placeholder="seu@email.com"
+                                    required
                                 />
-                            ) : (
-                                <>
-                                    Criar conta
-                                    <ArrowRight size={18} />
-                                </>
-                            )}
-                        </button>
-                    </form>
+                            </div>
 
-                    <div
-                        style={{
-                            textAlign: "center",
-                            marginTop: 24,
-                            fontSize: 14,
-                            color: "var(--text-secondary)",
-                        }}
-                    >
-                        Já tem conta?{" "}
-                        <Link href="/login" style={{ color: "var(--accent)", fontWeight: 600 }}>
-                            Fazer login
-                        </Link>
-                    </div>
+                            <div style={{ display: "grid", gap: 8 }}>
+                                <label style={{ fontWeight: 600 }}>Senha</label>
+                                <div style={{ position: "relative" }}>
+                                    <input
+                                        type={showPassword ? "text" : "password"}
+                                        value={password}
+                                        onChange={(event) => setPassword(event.target.value)}
+                                        className="input-field"
+                                        placeholder="Mínimo de 6 caracteres"
+                                        style={{ paddingRight: 48 }}
+                                        required
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPassword((current) => !current)}
+                                        style={{
+                                            position: "absolute",
+                                            top: "50%",
+                                            right: 14,
+                                            transform: "translateY(-50%)",
+                                            background: "none",
+                                            border: "none",
+                                            color: "var(--text-muted)",
+                                            cursor: "pointer",
+                                        }}
+                                    >
+                                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {error && (
+                                <div style={{ padding: "12px 14px", borderRadius: 14, background: "rgba(251, 113, 133, 0.12)", color: "#fecdd3" }}>
+                                    {error}
+                                </div>
+                            )}
+
+                            <button type="submit" disabled={loading} className="btn-primary" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minHeight: 52 }}>
+                                {loading ? "Criando conta..." : "Criar conta"}
+                                {!loading && <ArrowRight size={18} />}
+                            </button>
+                        </form>
+
+                        <div style={{ color: "var(--text-secondary)", fontSize: 14 }}>
+                            Já tem conta?{" "}
+                            <Link href="/login" style={{ color: "var(--accent)", fontWeight: 700 }}>
+                                Fazer login
+                            </Link>
+                        </div>
+                    </section>
                 </div>
             </motion.div>
         </div>
